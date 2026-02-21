@@ -1,4 +1,42 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 # ShieldDesk AI — Project Context for Claude
+
+## Common commands
+
+```bash
+# Install all workspace dependencies
+npm install
+
+# Run services (from project root)
+npm run dev:api          # API server (port 3000) — tsx watch
+npm run dev:mcp          # MCP tool server (port 3001) — tsx watch
+npm run dev:dashboard    # Next.js dashboard (port 3002)
+npm run dev:convex       # Convex dev sync
+
+# Deploy Convex functions
+CONVEX_DEPLOYMENT='dev:diligent-lynx-844' npx convex dev --once
+
+# Run policy unit tests (Node.js built-in test runner, not Jest)
+node --import tsx --test apps/api-server/tests/**/*.test.ts
+
+# Run eval harness (10 golden cases)
+npm run eval
+
+# Typecheck individual workspaces
+npm run typecheck --workspace=apps/api-server
+npm run typecheck --workspace=mcp-server
+
+# Build
+npm run build --workspace=apps/api-server
+npm run build --workspace=mcp-server
+npm run build --workspace=apps/dashboard
+
+# Seed demo data
+npm run seed
+```
 
 ## What this project is
 
