@@ -54,10 +54,11 @@ export class SpeechmaticsClient {
             transcription_config: {
               language: "en",
               enable_partials: true,
-              max_delay: 2.0,
-            },
-            conversation_config: {
-              end_of_utterance_silence_trigger: 0.5,
+              // Lower max_delay to reduce final transcript latency for phone turns.
+              max_delay: 1.0,
+              conversation_config: {
+                end_of_utterance_silence_trigger: 0.5,
+              },
             },
             audio_format: {
               type: "raw",

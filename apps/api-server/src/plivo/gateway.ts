@@ -6,6 +6,10 @@ import { SpeechmaticsClient } from "./speechmatics.js";
 import { streamTts } from "./elevenlabs.js";
 import { config } from "../config.js";
 import { executeWithGovernance } from "../policy/executor.js";
+import {
+  TOOL_FUNCTION_DEFINITIONS,
+  toMcpToolName,
+} from "../vapi/tool-definitions.js";
 import type { Sentiment, TrustLevel } from "@shielddesk/shared";
 
 const log = pino({ name: "plivo-gateway" });
@@ -22,7 +26,50 @@ interface CallSession {
   trustLevel: TrustLevel;
   customerId?: string;
   conversationId?: string;
+  turnFlushTimer: NodeJS.Timeout | null;
+  playbackStartedAtMs: number | null;
+  bargeInTriggered: boolean;
+  llmFailures: number;
+  conversationHistory: Array<{ role: "user" | "assistant"; content: string }>;
 }
+
+interface MiniMaxToolCall {
+  id?: string;
+  function?: {
+    name?: string;
+    arguments?: unknown;
+  };
+}
+
+interface ToolExecutionOutcome {
+  toolName: string;
+  decision: "allow" | "deny" | "escalate";
+  reason: string;
+  result?: unknown;
+}
+
+const PHONE_SYSTEM_PROMPT = `You are ShieldDesk, an AI customer support agent on a live phone call.
+
+Rules:
+- Be concise and conversational.
+- Keep spoken replies short (one sentence unless the customer asks for detail).
+- You already greeted the caller at call start. Do not re-introduce yourself.
+- For any request needing data lookup or account/order action, call the appropriate tool.
+- Never fabricate customer, order, ticket, or policy details.
+
+Available tools:
+- faq_search
+- order_lookup
+- account_lookup
+- ticket_create
+- ticket_escalate
+- account_update
+- order_refund`;
+
+const PHONE_LLM_TEMPERATURE = 0.2;
+const PHONE_LLM_MAX_TOKENS = 128;
+const PHONE_LLM_TIMEOUT_MS = 3500;
+const MAX_HISTORY_TURNS = 8;
 
 /** Map of active sessions by streamId */
 const sessions = new Map<string, CallSession>();
@@ -70,6 +117,7 @@ export function attachPlivoWebSocket(server: Server): void {
     ws.on("close", () => {
       if (session) {
         log.info({ callUuid: session.callUuid }, "Plivo WebSocket closed");
+        clearTurnFlushTimer(session);
         session.speechmatics?.endStream();
         session.speechmatics?.close();
         sessions.delete(session.streamId);
@@ -99,8 +147,15 @@ async function handlePlivoMessage(
   switch (event) {
     case "start": {
       const start = msg.start as Record<string, unknown>;
-      const streamId = start?.streamId as string ?? `stream-${Date.now()}`;
-      const callUuid = start?.callId as string ?? "unknown";
+      const streamId =
+        (typeof start?.streamId === "string" && start.streamId) ||
+        (typeof start?.stream_id === "string" && start.stream_id) ||
+        `stream-${Date.now()}`;
+      const callUuid =
+        (typeof start?.callId === "string" && start.callId) ||
+        (typeof start?.callUuid === "string" && start.callUuid) ||
+        (typeof start?.callUUID === "string" && start.callUUID) ||
+        "unknown";
 
       log.info({ callUuid, streamId }, "Plivo stream started");
 
@@ -115,6 +170,11 @@ async function handlePlivoMessage(
         trustLevel: 2, // Default to authenticated; resolved in production via caller ID lookup
         customerId: undefined,
         conversationId: undefined,
+        turnFlushTimer: null,
+        playbackStartedAtMs: null,
+        bargeInTriggered: false,
+        llmFailures: 0,
+        conversationHistory: [],
       };
 
       sessions.set(streamId, newSession);
@@ -122,9 +182,11 @@ async function handlePlivoMessage(
 
       // Play greeting FIRST — caller should hear something immediately
       // Do this before Speechmatics so there's no dead air
-      speakToPlivo(newSession, "Hi, welcome to ShieldDesk support! How can I help you today?").catch(
+      const greeting = "Hi, welcome to ShieldDesk support! How can I help you today?";
+      speakToPlivo(newSession, greeting).catch(
         (err) => log.error({ err, callUuid }, "Failed to play greeting")
       );
+      appendAssistantHistory(newSession, greeting);
 
       // Initialize Speechmatics STT connection in parallel with greeting
       try {
@@ -132,6 +194,13 @@ async function handlePlivoMessage(
           onPartialTranscript: (text) => {
             // Display only — DO NOT act on partials (per CLAUDE.md)
             log.debug({ callUuid, text }, "Partial transcript");
+            // Trigger barge-in only when we detect likely spoken words,
+            // not on every inbound audio frame.
+            if (shouldTriggerBargeIn(newSession, text)) {
+              sendClearAudio(newSession);
+              newSession.isPlayingAudio = false;
+              newSession.bargeInTriggered = true;
+            }
           },
 
           onFinalTranscript: (text) => {
@@ -139,20 +208,14 @@ async function handlePlivoMessage(
             if (text.trim()) {
               newSession.turnBuffer.push(text);
               log.info({ callUuid, text }, "Final transcript segment");
+              // Fallback for cases where EndOfUtterance is delayed or missed.
+              scheduleTurnFlush(newSession);
             }
           },
 
           onEndOfUtterance: () => {
             // Turn complete — process accumulated text
-            const fullUtterance = newSession.turnBuffer.join(" ").trim();
-            newSession.turnBuffer = [];
-
-            if (fullUtterance) {
-              log.info({ callUuid, fullUtterance }, "Turn complete");
-              processUtterance(newSession, fullUtterance).catch((err) => {
-                log.error({ err, callUuid }, "Failed to process utterance");
-              });
-            }
+            flushTurnBuffer(newSession, "end_of_utterance");
           },
 
           onSentiment: (sentiment) => {
@@ -190,12 +253,6 @@ async function handlePlivoMessage(
       // Plivo sends base64-encoded mulaw 8kHz audio
       const audioBuffer = Buffer.from(payload, "base64");
 
-      // Barge-in: if customer speaks during agent playback, stop playback
-      if (session.isPlayingAudio) {
-        sendClearAudio(session);
-        session.isPlayingAudio = false;
-      }
-
       // Forward raw mulaw bytes to Speechmatics
       session.speechmatics.sendAudio(audioBuffer);
       break;
@@ -212,6 +269,7 @@ async function handlePlivoMessage(
 
     case "stop": {
       log.info({ callUuid: session?.callUuid }, "Plivo stream stopped");
+      if (session) clearTurnFlushTimer(session);
       session?.speechmatics?.endStream();
       break;
     }
@@ -244,53 +302,90 @@ async function processUtterance(
           "Content-Type": "application/json",
           Authorization: `Bearer ${config.MINIMAX_API_KEY}`,
         },
+        signal: AbortSignal.timeout(PHONE_LLM_TIMEOUT_MS),
         body: JSON.stringify({
           model: config.MINIMAX_MODEL,
           messages: [
             {
               role: "system",
-              content:
-                "You are ShieldDesk, a customer support agent on a phone call. Keep responses concise and conversational.",
+              content: PHONE_SYSTEM_PROMPT,
             },
+            ...session.conversationHistory,
             { role: "user", content: utterance },
           ],
-          temperature: 0.7,
-          max_tokens: 512,
+          tools: TOOL_FUNCTION_DEFINITIONS,
+          temperature: PHONE_LLM_TEMPERATURE,
+          max_tokens: PHONE_LLM_MAX_TOKENS,
         }),
       }
     );
 
     if (!llmResponse.ok) {
+      session.llmFailures += 1;
       log.error(
         { status: llmResponse.status, callUuid },
         "MiniMax failed for phone utterance"
       );
       await speakToPlivo(
         session,
-        "I'm sorry, I'm having trouble right now. Could you repeat that?"
+        "I'm having trouble right now. Please repeat that."
       );
       return;
     }
+    session.llmFailures = 0;
 
     const data = (await llmResponse.json()) as {
       choices: Array<{
-        message: { content?: string; tool_calls?: Array<unknown> };
+        message: { content?: string; tool_calls?: Array<MiniMaxToolCall> };
       }>;
     };
 
     const assistantMessage = data.choices?.[0]?.message?.content;
     const toolCalls = data.choices?.[0]?.message?.tool_calls;
+    const toolOutcomes: ToolExecutionOutcome[] = [];
 
     if (toolCalls && toolCalls.length > 0) {
       // Process tool calls through governance
       for (const tc of toolCalls) {
-        const toolCall = tc as {
-          function: { name: string; arguments: string };
-        };
-        const toolArgs = JSON.parse(toolCall.function.arguments);
+        const rawName = tc.function?.name;
+        const rawArgs = tc.function?.arguments;
+        if (!rawName) {
+          log.warn({ callUuid, toolCall: tc }, "Tool call missing name");
+          continue;
+        }
+
+        const toolName = toMcpToolName(rawName);
+
+        let toolArgs: Record<string, unknown>;
+        try {
+          if (typeof rawArgs === "string") {
+            const parsed = JSON.parse(rawArgs) as unknown;
+            if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+              throw new Error("tool arguments must be an object");
+            }
+            toolArgs = parsed as Record<string, unknown>;
+          } else if (rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs)) {
+            toolArgs = rawArgs as Record<string, unknown>;
+          } else if (rawArgs === undefined || rawArgs === null) {
+            toolArgs = {};
+          } else {
+            throw new Error("tool arguments must be a JSON object");
+          }
+        } catch (parseErr) {
+          log.warn(
+            { callUuid, rawName, rawArgs, err: parseErr },
+            "Invalid tool arguments in phone channel"
+          );
+          toolOutcomes.push({
+            toolName,
+            decision: "deny",
+            reason: "Tool arguments were invalid and could not be parsed.",
+          });
+          continue;
+        }
 
         const result = await executeWithGovernance({
-          toolName: toolCall.function.name,
+          toolName,
           toolArgs,
           confidence: 0.9,
           sentiment: session.sentiment,
@@ -300,23 +395,142 @@ async function processUtterance(
         });
 
         log.info(
-          { callUuid, toolName: toolCall.function.name, decision: result.decision },
+          { callUuid, toolName, decision: result.decision },
           "Phone channel governance result"
         );
+
+        toolOutcomes.push({
+          toolName,
+          decision: result.decision,
+          reason: result.reason,
+          result: result.toolResult,
+        });
       }
     }
 
+    const spokenResponse = generatePhoneResponse({
+      assistantDraft: assistantMessage,
+      toolOutcomes,
+    });
+
     // Speak the response back via ElevenLabs TTS → Plivo
-    if (assistantMessage) {
-      await speakToPlivo(session, assistantMessage);
+    if (spokenResponse) {
+      await speakToPlivo(session, spokenResponse);
+      appendUserHistory(session, utterance);
+      appendAssistantHistory(session, spokenResponse);
     }
   } catch (err) {
+    session.llmFailures += 1;
     log.error({ err, callUuid }, "Error processing phone utterance");
     await speakToPlivo(
       session,
-      "I encountered an issue. Let me transfer you to a human agent."
+      "I hit a temporary issue. Please repeat your request."
     );
   }
+}
+
+function scheduleTurnFlush(session: CallSession): void {
+  clearTurnFlushTimer(session);
+  session.turnFlushTimer = setTimeout(() => {
+    flushTurnBuffer(session, "timeout_fallback");
+  }, 1100);
+}
+
+function clearTurnFlushTimer(session: CallSession): void {
+  if (session.turnFlushTimer) {
+    clearTimeout(session.turnFlushTimer);
+    session.turnFlushTimer = null;
+  }
+}
+
+function flushTurnBuffer(
+  session: CallSession,
+  reason: "end_of_utterance" | "timeout_fallback"
+): void {
+  clearTurnFlushTimer(session);
+  const fullUtterance = session.turnBuffer.join(" ").trim();
+  session.turnBuffer = [];
+  if (!fullUtterance) return;
+
+  log.info(
+    { callUuid: session.callUuid, reason, fullUtterance },
+    "Turn complete"
+  );
+
+  processUtterance(session, fullUtterance).catch((err) => {
+    log.error(
+      { err, callUuid: session.callUuid },
+      "Failed to process utterance"
+    );
+  });
+}
+
+function generatePhoneResponse(input: {
+  assistantDraft?: string;
+  toolOutcomes: ToolExecutionOutcome[];
+}): string {
+  const { assistantDraft, toolOutcomes } = input;
+  if (toolOutcomes.length === 0) {
+    return stripThinkBlocks(assistantDraft) ??
+      "I can help with that. Could you repeat that request?";
+  }
+
+  // For phone latency, avoid a second LLM round-trip after tool execution.
+  const cleanedDraft = stripThinkBlocks(assistantDraft);
+  if (cleanedDraft) {
+    return cleanedDraft;
+  }
+
+  return buildDeterministicOutcomeSummary(toolOutcomes);
+}
+
+function stripThinkBlocks(text: string | undefined): string | null {
+  if (typeof text !== "string") return null;
+  const cleaned = text
+    .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    .trim();
+  return cleaned.length > 0 ? cleaned : null;
+}
+
+function appendUserHistory(session: CallSession, content: string): void {
+  appendHistory(session, { role: "user", content });
+}
+
+function appendAssistantHistory(session: CallSession, content: string): void {
+  appendHistory(session, { role: "assistant", content });
+}
+
+function appendHistory(
+  session: CallSession,
+  item: { role: "user" | "assistant"; content: string }
+): void {
+  const text = item.content.trim();
+  if (!text) return;
+  session.conversationHistory.push({ role: item.role, content: text });
+  if (session.conversationHistory.length > MAX_HISTORY_TURNS) {
+    session.conversationHistory = session.conversationHistory.slice(
+      session.conversationHistory.length - MAX_HISTORY_TURNS
+    );
+  }
+}
+
+function buildDeterministicOutcomeSummary(
+  outcomes: ToolExecutionOutcome[]
+): string {
+  const hasEscalation = outcomes.some((o) => o.decision === "escalate");
+  const hasDenial = outcomes.some((o) => o.decision === "deny");
+  const hasAllow = outcomes.some((o) => o.decision === "allow");
+
+  if (hasAllow && !hasEscalation && !hasDenial) {
+    return "Done. I completed that request.";
+  }
+  if (hasEscalation && !hasAllow && !hasDenial) {
+    return "I need to route that to a human agent for approval.";
+  }
+  if (hasDenial && !hasAllow && !hasEscalation) {
+    return "I can't perform that action automatically due to security policy.";
+  }
+  return "I completed the safe parts and escalated the rest for human review.";
 }
 
 /**
@@ -330,6 +544,8 @@ async function speakToPlivo(
   const { callUuid } = session;
   log.info({ callUuid, textLength: text.length, text: text.substring(0, 80) }, "Speaking to Plivo caller");
   session.isPlayingAudio = true;
+  session.playbackStartedAtMs = Date.now();
+  session.bargeInTriggered = false;
 
   let chunksSent = 0;
   try {
@@ -372,4 +588,16 @@ function sendClearAudio(session: CallSession): void {
     log.info({ callUuid: session.callUuid }, "Barge-in: clearing audio");
     session.plivoWs.send(JSON.stringify({ event: "clearAudio" }));
   }
+}
+
+function shouldTriggerBargeIn(session: CallSession, partialText: string): boolean {
+  if (!session.isPlayingAudio || session.bargeInTriggered) return false;
+  const started = session.playbackStartedAtMs ?? 0;
+  // Avoid clearing immediately due to line noise right as playback starts.
+  if (Date.now() - started < 450) return false;
+
+  const text = partialText.trim();
+  if (text.length < 3) return false;
+  // Require at least one alphanumeric to filter punctuation/noise fragments.
+  return /[a-z0-9]/i.test(text);
 }
