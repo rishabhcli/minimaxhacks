@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.env
+.env.local
+.convex/
+.next/
+*.tsbuildinfo
+.claude/*.local.*

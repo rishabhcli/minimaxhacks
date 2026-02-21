@@ -1,0 +1,25 @@
+{
+  "name": "shielddesk-ai",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "packages/shared",
+    "apps/api-server",
+    "apps/dashboard",
+    "mcp-server",
+    "convex",
+    "eval"
+  ],
+  "scripts": {
+    "dev:api": "npm run dev --workspace=apps/api-server",
+    "dev:dashboard": "npm run dev --workspace=apps/dashboard",
+    "dev:mcp": "npm run dev --workspace=mcp-server",
+    "dev:convex": "cd convex && npx convex dev",
+    "eval": "npm run eval --workspace=eval",
+    "seed": "npx tsx scripts/seed-data.ts",
+    "scrape-knowledge": "npx tsx scripts/scrape-knowledge.ts"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0"
+  }
+}
