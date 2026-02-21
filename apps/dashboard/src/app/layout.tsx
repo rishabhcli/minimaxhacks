@@ -1,6 +1,21 @@
 import type { Metadata } from "next";
+import Link from "next/link";
+import { Space_Grotesk, IBM_Plex_Mono } from "next/font/google";
 import { ConvexClientProvider } from "@/components/ConvexClientProvider";
 import "./globals.css";
+
+const headingFont = Space_Grotesk({
+  subsets: ["latin"],
+  variable: "--font-heading",
+  display: "swap",
+});
+
+const monoFont = IBM_Plex_Mono({
+  subsets: ["latin"],
+  variable: "--font-mono",
+  weight: ["400", "500"],
+  display: "swap",
+});
 
 export const metadata: Metadata = {
   title: "ShieldDesk AI — Dashboard",
@@ -14,18 +29,36 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body>
+      <body className={`${headingFont.variable} ${monoFont.variable}`}>
         <ConvexClientProvider>
-          <header>
-            <div className="inner">
-              <h1>ShieldDesk AI</h1>
-              <nav style={{ display: "flex", gap: "1.5rem", fontSize: "0.875rem" }}>
-                <a href="/">Conversations</a>
-                <a href="/talk">Talk to Support</a>
-              </nav>
+          <div className="app-shell">
+            <div className="ambient-layer" aria-hidden="true">
+              <div className="ambient-orb ambient-orb-a" />
+              <div className="ambient-orb ambient-orb-b" />
+              <div className="ambient-grid" />
             </div>
-          </header>
-          <main className="container">{children}</main>
+            <header className="topbar">
+              <div className="topbar-inner">
+                <Link href="/" className="brand">
+                  <span className="brand-mark">SD</span>
+                  <span>
+                    <strong>ShieldDesk</strong>
+                    <small>Governed Support Console</small>
+                  </span>
+                </Link>
+                <nav className="topnav">
+                  <Link href="/" className="nav-link">
+                    Conversations
+                  </Link>
+                  <Link href="/talk" className="nav-link nav-link-accent">
+                    Talk to Support
+                  </Link>
+                </nav>
+                <p className="topbar-note">Live audit trail + policy surface</p>
+              </div>
+            </header>
+            <main className="container page-entry">{children}</main>
+          </div>
         </ConvexClientProvider>
       </body>
     </html>

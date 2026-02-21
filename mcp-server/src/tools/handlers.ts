@@ -92,16 +92,30 @@ async function handleFaqSearch(
   raw: Record<string, unknown>
 ): Promise<ToolResult> {
   const input = FaqSearchInput.parse(raw);
-  // Vector search requires embeddings — stub until RAG pipeline (Layer 3).
+  const docs = (await convex.query(api.knowledgeDocuments.search, {
+    query: input.query,
+  })) as Array<{
+    title?: string;
+    content?: string;
+    sourceUrl?: string;
+  }>;
+
+  const queryLower = input.query.toLowerCase();
+  const results = docs.slice(0, 5).map((doc) => {
+    const content = (doc.content ?? "").replace(/\s+/g, " ").trim();
+    const idx = content.toLowerCase().indexOf(queryLower);
+    const start = idx >= 0 ? Math.max(0, idx - 80) : 0;
+    const snippet = content.slice(start, start + 220);
+    return {
+      title: doc.title ?? "Knowledge Document",
+      snippet,
+      sourceUrl: doc.sourceUrl ?? "",
+    };
+  });
+
   return textResult(
     JSON.stringify({
-      results: [
-        {
-          title: "FAQ Search",
-          snippet: `Search results for: "${input.query}" — RAG pipeline not yet wired.`,
-          sourceUrl: "https://help.shielddesk.ai",
-        },
-      ],
+      results,
     })
   );
 }

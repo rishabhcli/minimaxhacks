@@ -42,6 +42,49 @@ app.post("/mcp", async (req, res) => {
   }
 });
 
+// ── ArmorIQ-compatible invoke endpoint ──
+// Accepts { action/tool, params/arguments } and dispatches to tools/call.
+app.post("/invoke", async (req, res) => {
+  const action =
+    typeof req.body?.action === "string"
+      ? req.body.action
+      : typeof req.body?.tool === "string"
+        ? req.body.tool
+        : null;
+  const args =
+    typeof req.body?.params === "object" && req.body?.params !== null
+      ? req.body.params
+      : typeof req.body?.arguments === "object" && req.body?.arguments !== null
+        ? req.body.arguments
+        : {};
+
+  if (!action) {
+    res.status(400).json({ error: { code: -32602, message: "Missing action" } });
+    return;
+  }
+
+  try {
+    const result = await handleJsonRpc(
+      {
+        jsonrpc: "2.0",
+        id: Date.now(),
+        method: "tools/call",
+        params: {
+          name: action,
+          arguments: args,
+        },
+      },
+      log
+    );
+    res.json(result);
+  } catch (err) {
+    log.error({ err, action }, "Unhandled error in invoke endpoint");
+    res
+      .status(500)
+      .json({ error: { code: -32603, message: "Internal invoke error" } });
+  }
+});
+
 // ── Start server ──
 const port = config.MCP_PORT;
 app.listen(port, () => {

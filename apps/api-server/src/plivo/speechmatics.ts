@@ -56,6 +56,9 @@ export class SpeechmaticsClient {
               enable_partials: true,
               max_delay: 2.0,
             },
+            conversation_config: {
+              end_of_utterance_silence_trigger: 0.5,
+            },
             audio_format: {
               type: "raw",
               encoding: "mulaw",
@@ -124,6 +127,10 @@ export class SpeechmaticsClient {
         // Display only — DO NOT act on partial transcripts (per CLAUDE.md)
         const partialText = (msg.metadata as Record<string, unknown>)?.transcript as string
           ?? this.extractTranscriptText(msg);
+        const partialSentiment = this.extractSentiment(msg);
+        if (partialSentiment) {
+          this.events.onSentiment(partialSentiment);
+        }
         if (partialText) {
           this.events.onPartialTranscript(partialText);
         }
@@ -133,6 +140,10 @@ export class SpeechmaticsClient {
       case "AddTranscript": {
         // Final transcript — append to turn buffer
         const finalText = this.extractTranscriptText(msg);
+        const finalSentiment = this.extractSentiment(msg);
+        if (finalSentiment) {
+          this.events.onSentiment(finalSentiment);
+        }
         if (finalText) {
           this.events.onFinalTranscript(finalText);
         }
@@ -177,6 +188,15 @@ export class SpeechmaticsClient {
       .map((r) => r.alternatives?.[0]?.content ?? "")
       .join(" ")
       .trim();
+  }
+
+  private extractSentiment(msg: Record<string, unknown>): string | null {
+    const metadata = msg.metadata as Record<string, unknown> | undefined;
+    const sentiment = metadata?.sentiment;
+    if (typeof sentiment === "string" && sentiment.trim().length > 0) {
+      return sentiment;
+    }
+    return null;
   }
 
   private async getTemporaryJwt(): Promise<string> {

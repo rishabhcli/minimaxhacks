@@ -3,8 +3,10 @@ import { config } from "../config.js";
 import { evaluatePolicy } from "./decision.js";
 import { getRiskScore } from "./risk-scores.js";
 import type { Sentiment, TrustLevel } from "@shielddesk/shared";
+import { ArmorIQClient } from "@armoriq/sdk";
 
 const log = pino({ name: "policy-executor" });
+let armoriqClient: ArmorIQClient | null | undefined;
 
 export interface GovernanceInput {
   toolName: string;
@@ -25,6 +27,69 @@ export interface GovernanceResult {
   armoriqVerified?: boolean;
   effectiveThreshold: number;
   riskScore: number;
+}
+
+function hasArmorIqConfig(): boolean {
+  return Boolean(
+    config.ARMORIQ_API_KEY &&
+      config.ARMORIQ_USER_ID &&
+      config.ARMORIQ_AGENT_ID
+  );
+}
+
+function getArmorIqClient(): ArmorIQClient | null {
+  if (!hasArmorIqConfig()) return null;
+  if (armoriqClient !== undefined) return armoriqClient;
+
+  const localProxyBase = config.MCP_SERVER_URL.replace(/\/mcp$/, "");
+  const proxyEndpoints = config.ARMORIQ_LOCAL_PROXY_MODE
+    ? { [config.ARMORIQ_MCP_ID]: localProxyBase }
+    : undefined;
+
+  armoriqClient = new ArmorIQClient({
+    apiKey: config.ARMORIQ_API_KEY,
+    userId: config.ARMORIQ_USER_ID,
+    agentId: config.ARMORIQ_AGENT_ID,
+    contextId: config.ARMORIQ_CONTEXT_ID,
+    proxyEndpoints,
+  });
+
+  log.info(
+    {
+      userId: config.ARMORIQ_USER_ID,
+      agentId: config.ARMORIQ_AGENT_ID,
+      contextId: config.ARMORIQ_CONTEXT_ID,
+      mcpId: config.ARMORIQ_MCP_ID,
+      localProxyMode: config.ARMORIQ_LOCAL_PROXY_MODE,
+      localProxyBase: config.ARMORIQ_LOCAL_PROXY_MODE
+        ? localProxyBase
+        : undefined,
+    },
+    "ArmorIQ client initialized"
+  );
+
+  return armoriqClient;
+}
+
+function buildArmorIqPlan(input: GovernanceInput): Record<string, unknown> {
+  return {
+    goal: `Execute governed support action: ${input.toolName}`,
+    steps: [
+      {
+        action: input.toolName,
+        mcp: config.ARMORIQ_MCP_ID,
+        inputs: input.toolArgs,
+      },
+    ],
+  };
+}
+
+function formatExecutionError(error: unknown): string {
+  const base = error instanceof Error ? error.message : "unknown error";
+  if (base.includes("MCP invocation failed: HTTP 400")) {
+    return `${base}. Verify ARMORIQ_MCP_ID is correctly registered and reachable in ArmorIQ MCP registry.`;
+  }
+  return base;
 }
 
 /**
@@ -85,30 +150,72 @@ export async function executeWithGovernance(
 
   // Step 4: ALLOW — execute via ArmorIQ → MCP
   try {
-    // ArmorIQ flow: capturePlan → getIntentToken → invoke
-    // When ArmorIQ SDK is available, this will be:
-    //   const planCapture = await armoriq.capturePlan(llm, prompt, plan, metadata)
-    //   const token = await armoriq.getIntentToken(planCapture, policy, 300)
-    //   const result = await armoriq.invoke(mcp, action, token, params)
-    //
-    // For now, execute directly against MCP server
-    const mcpResult = await callMcpServer(input.toolName, input.toolArgs);
+    const armorIq = getArmorIqClient();
+
+    if (!armorIq) {
+      // Graceful local fallback when ArmorIQ credentials are not configured.
+      const mcpResult = await callMcpServer(input.toolName, input.toolArgs);
+      return {
+        ...base,
+        decision: "allow",
+        reason: `${policyDecision.reason} (ArmorIQ not configured; executed via direct MCP fallback)`,
+        toolResult: mcpResult,
+        armoriqVerified: false,
+      };
+    }
+
+    const plan = buildArmorIqPlan(input);
+    const prompt = `Execute ${input.toolName} with governed policy checks for support conversation`;
+    const planCapture = armorIq.capturePlan(
+      config.MINIMAX_MODEL,
+      prompt,
+      plan,
+      {
+        conversationId: input.conversationId,
+        customerId: input.customerId,
+        sentiment: input.sentiment,
+        trustLevel: input.trustLevel,
+      }
+    );
+
+    const intentToken = await armorIq.getIntentToken(
+      planCapture,
+      undefined,
+      300
+    );
+    const invocation = await armorIq.invoke(
+      config.ARMORIQ_MCP_ID,
+      input.toolName,
+      intentToken,
+      input.toolArgs
+    );
+    const armoriqVerified = config.ARMORIQ_LOCAL_PROXY_MODE
+      ? false
+      : invocation.verified;
+    const reason = config.ARMORIQ_LOCAL_PROXY_MODE
+      ? `${policyDecision.reason} (executed via local proxy compatibility mode; cryptographic proxy verification bypassed)`
+      : policyDecision.reason;
 
     return {
       ...base,
       decision: "allow",
-      reason: policyDecision.reason,
-      toolResult: mcpResult,
-      // ArmorIQ fields will be populated when SDK is wired in Layer 2.3
-      armoriqVerified: false,
+      reason,
+      toolResult: invocation.result,
+      armoriqTokenId: intentToken.tokenId,
+      armoriqPlanHash: intentToken.planHash,
+      armoriqVerified,
     };
   } catch (err) {
-    // Fail closed: if execution fails, report failure
-    log.error({ err, toolName: input.toolName }, "Tool execution failed");
+    // Fail closed: if ArmorIQ is configured and fails, deny execution.
+    // This preserves governance guarantees.
+    log.error(
+      { err, toolName: input.toolName, armoriqConfigured: hasArmorIqConfig() },
+      "Tool execution failed"
+    );
     return {
       ...base,
       decision: "deny",
-      reason: `Execution failed: ${err instanceof Error ? err.message : "unknown error"}`,
+      reason: `Execution failed: ${formatExecutionError(err)}`,
     };
   }
 }

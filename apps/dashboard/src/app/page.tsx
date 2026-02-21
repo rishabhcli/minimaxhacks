@@ -19,68 +19,94 @@ interface Conversation {
 
 export default function HomePage() {
   const conversations = useQuery(api.conversations.list) as Conversation[] | undefined;
+  const total = conversations?.length ?? 0;
+  const active = conversations?.filter((conv) => conv.status === "active").length ?? 0;
+  const web = conversations?.filter((conv) => conv.channelType === "vapi_web").length ?? 0;
+  const phone = total - web;
+  const averageTrust = total > 0
+    ? (
+        conversations!.reduce((sum, conv) => sum + conv.trustLevel, 0) / total
+      ).toFixed(2)
+    : "0.00";
 
   return (
-    <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem" }}>
-        <h2 style={{ fontSize: "1.5rem", fontWeight: 700 }}>Conversations</h2>
+    <div className="page-stack">
+      <section className="hero">
+        <h2>Support Operations Console</h2>
+        <p>
+          Monitor governed customer conversations in real time, inspect policy decisions,
+          and launch a new support call when escalation is needed.
+        </p>
+        <div className="hero-row">
+          <span className="metric-chip">
+            <span className="metric-dot live" />
+            Active {active}
+          </span>
+          <span className="metric-chip">
+            <span className="metric-dot web" />
+            Web {web}
+          </span>
+          <span className="metric-chip">
+            <span className="metric-dot phone" />
+            Phone {phone}
+          </span>
+          <span className="metric-chip">
+            <span className="metric-dot trust" />
+            Avg Trust {averageTrust}
+          </span>
+        </div>
+      </section>
+
+      <div className="section-title">
+        <span>Conversations</span>
         <Link href="/talk" className="btn btn-primary">
           Talk to Support
         </Link>
       </div>
 
       {conversations === undefined && (
-        <p style={{ color: "var(--text-muted)" }}>Loading conversations...</p>
-      )}
-
-      {conversations && conversations.length === 0 && (
-        <div className="card" style={{ textAlign: "center", padding: "3rem" }}>
-          <p style={{ color: "var(--text-muted)", marginBottom: "1rem" }}>
-            No conversations yet. Start one by clicking &quot;Talk to Support&quot;.
-          </p>
+        <div className="card empty-state">
+          <strong>Loading conversations</strong>
+          Connecting to the Convex stream.
         </div>
       )}
 
-      <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+      {conversations && conversations.length === 0 && (
+        <div className="card empty-state">
+          <strong>No conversations yet</strong>
+          Start one by clicking <em>Talk to Support</em>.
+        </div>
+      )}
+
+      <div className="list-stack">
         {conversations?.map((conv: Conversation) => (
-          <Link
-            key={conv._id}
-            href={`/conversations/${conv._id}`}
-            style={{ textDecoration: "none" }}
-          >
-            <div className="card" style={{ cursor: "pointer", transition: "border-color 0.15s" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
-                  <span className={`badge ${conv.channelType === "vapi_web" ? "badge-vapi" : "badge-plivo"}`}>
-                    {conv.channelType === "vapi_web" ? "Web" : "Phone"}
-                  </span>
-                  <span style={{ fontWeight: 600 }}>
-                    {conv.customerId ? `Customer ${String(conv.customerId).slice(-6)}` : "Anonymous"}
-                  </span>
-                </div>
-                <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
-                  <span className={`badge ${conv.status === "active" ? "badge-active" : "badge-completed"}`}>
-                    {conv.status}
-                  </span>
-                  <span className="badge" style={{ background: "rgba(99,102,241,0.1)", color: "var(--accent)" }}>
-                    Trust {conv.trustLevel}
-                  </span>
-                  {conv.sentimentScore && (
-                    <span style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
-                      {conv.sentimentScore}
-                    </span>
-                  )}
-                  <span style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
-                    {new Date(conv.startedAt).toLocaleTimeString()}
-                  </span>
-                </div>
+          <Link key={conv._id} href={`/conversations/${conv._id}`} className="card card-hover conversation-card">
+            <div className="conversation-main">
+              <div className="conversation-meta">
+                <span className={`badge ${conv.channelType === "vapi_web" ? "badge-vapi" : "badge-plivo"}`}>
+                  {conv.channelType === "vapi_web" ? "Web" : "Phone"}
+                </span>
+                <span className={`badge ${conv.status === "active" ? "badge-active" : "badge-completed"}`}>
+                  {conv.status}
+                </span>
+                <span className="badge badge-trust">Trust {conv.trustLevel}</span>
+                {conv.sentimentScore && (
+                  <span className="badge badge-escalate">{conv.sentimentScore}</span>
+                )}
               </div>
-              {conv.summary && (
-                <p style={{ marginTop: "0.5rem", fontSize: "0.875rem", color: "var(--text-muted)" }}>
-                  {conv.summary}
-                </p>
-              )}
+              <div className="conversation-meta">
+                <span className="meta-time">{new Date(conv.startedAt).toLocaleString()}</span>
+              </div>
             </div>
+
+            <div className="conversation-main">
+              <strong>
+                {conv.customerId ? `Customer ${String(conv.customerId).slice(-6)}` : "Anonymous customer"}
+              </strong>
+              <span className="section-caption">Session {String(conv.channelSessionId).slice(0, 14)}...</span>
+            </div>
+
+            {conv.summary && <p className="summary-text">{conv.summary}</p>}
           </Link>
         ))}
       </div>

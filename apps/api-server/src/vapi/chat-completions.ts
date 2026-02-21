@@ -3,8 +3,11 @@ import { z } from "zod";
 import pino from "pino";
 import { config } from "../config.js";
 import { TOOL_FUNCTION_DEFINITIONS } from "./tool-definitions.js";
+import { convex } from "../convex-client.js";
+import { anyApi } from "convex/server";
 
 const log = pino({ name: "vapi-chat-completions" });
+const api = anyApi;
 
 const router = Router();
 
@@ -60,6 +63,99 @@ AVAILABLE TOOLS:
 - account.update: Update customer account fields
 - order.refund: Process a refund for an order`;
 
+type KnowledgeDoc = {
+  title?: string;
+  content?: string;
+  sourceUrl?: string;
+};
+
+function stripThinkBlocks(content: string): string {
+  const cleaned = content
+    .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    .trim();
+  return cleaned.length > 0
+    ? cleaned
+    : "I can help with that. Could you share a bit more detail?";
+}
+
+function sanitizeModelResponsePayload(
+  payload: Record<string, unknown>
+): Record<string, unknown> {
+  const choices = payload.choices;
+  if (!Array.isArray(choices)) {
+    return payload;
+  }
+
+  for (const choice of choices) {
+    if (typeof choice !== "object" || choice === null) continue;
+    const message = (choice as { message?: Record<string, unknown> }).message;
+    if (!message || typeof message !== "object") continue;
+    if (typeof message.content !== "string") continue;
+    message.content = stripThinkBlocks(message.content);
+  }
+
+  return payload;
+}
+
+function latestUserText(
+  messages: Array<z.infer<typeof MessageSchema>>
+): string | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg?.role === "user" && typeof msg.content === "string") {
+      const text = msg.content.trim();
+      if (text.length > 0) return text;
+    }
+  }
+  return null;
+}
+
+function buildKbContext(docs: KnowledgeDoc[]): string {
+  if (docs.length === 0) {
+    return "No relevant knowledge documents were retrieved for this turn.";
+  }
+
+  return docs
+    .slice(0, 5)
+    .map((doc, idx) => {
+      const title = doc.title ?? `Document ${idx + 1}`;
+      const source = doc.sourceUrl ?? "unknown-source";
+      const snippet = (doc.content ?? "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 400);
+      return `[${idx + 1}] ${title}\nSource: ${source}\nSnippet: ${snippet}`;
+    })
+    .join("\n\n");
+}
+
+async function buildSystemPromptWithKnowledge(
+  messages: Array<z.infer<typeof MessageSchema>>
+): Promise<string> {
+  const userText = latestUserText(messages);
+  if (!userText) return SYSTEM_PROMPT;
+
+  try {
+    const docs = (await convex.query(api.knowledgeDocuments.search, {
+      query: userText,
+    })) as KnowledgeDoc[];
+    const kbContext = buildKbContext(Array.isArray(docs) ? docs : []);
+
+    return `${SYSTEM_PROMPT}
+
+KNOWLEDGE CONTEXT (retrieved from ShieldDesk KB):
+${kbContext}
+
+GROUNDING RULES:
+- Prioritize retrieved context for factual support policies/processes.
+- If context is insufficient, say so and ask a clarifying question or use a tool.
+- Do not invent policy details not present in context or tool results.`;
+  } catch (err) {
+    log.warn({ err }, "RAG lookup failed, proceeding without KB context");
+    return SYSTEM_PROMPT;
+  }
+}
+
 // ── POST /vapi/chat/completions ──
 
 router.post("/chat/completions", async (req, res) => {
@@ -87,15 +183,16 @@ router.post("/chat/completions", async (req, res) => {
     "Chat completion request from VAPI"
   );
 
-  // Build messages with our system prompt injected
-  const systemMessage = { role: "system" as const, content: SYSTEM_PROMPT };
+  // Build messages with system prompt + retrieved KB context.
+  const resolvedSystemPrompt = await buildSystemPromptWithKnowledge(messages);
+  const systemMessage = {
+    role: "system" as const,
+    content: resolvedSystemPrompt,
+  };
 
   // Filter out any existing system messages from VAPI, inject ours
   const userMessages = messages.filter((m) => m.role !== "system");
   const fullMessages = [systemMessage, ...userMessages];
-
-  // TODO (Layer 3): Query Convex RAG for relevant knowledge based on latest user message
-  // and append context to the system prompt
 
   try {
     // Proxy to MiniMax M2.5 (OpenAI-compatible endpoint)
@@ -147,13 +244,31 @@ router.post("/chat/completions", async (req, res) => {
     }
 
     // Validate and forward MiniMax response
-    const responseData = await minimaxResponse.json();
+    const responseData = sanitizeModelResponsePayload(
+      (await minimaxResponse.json()) as Record<string, unknown>
+    );
+    const firstChoice =
+      Array.isArray(responseData.choices) &&
+      responseData.choices.length > 0 &&
+      typeof responseData.choices[0] === "object" &&
+      responseData.choices[0] !== null
+        ? (responseData.choices[0] as Record<string, unknown>)
+        : null;
+    const firstMessage =
+      firstChoice &&
+      typeof firstChoice.message === "object" &&
+      firstChoice.message !== null
+        ? (firstChoice.message as Record<string, unknown>)
+        : null;
 
     log.info(
       {
-        model: responseData.model,
-        finishReason: responseData.choices?.[0]?.finish_reason,
-        hasToolCalls: !!responseData.choices?.[0]?.message?.tool_calls,
+        model: typeof responseData.model === "string" ? responseData.model : undefined,
+        finishReason:
+          firstChoice && typeof firstChoice.finish_reason === "string"
+            ? firstChoice.finish_reason
+            : undefined,
+        hasToolCalls: Array.isArray(firstMessage?.tool_calls),
       },
       "MiniMax response"
     );

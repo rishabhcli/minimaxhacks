@@ -16,11 +16,68 @@ export function VapiWidget() {
   const [status, setStatus] = useState<CallStatus>("idle");
   const [transcript, setTranscript] = useState<string[]>([]);
   const vapiRef = useRef<unknown>(null);
+  const transcriptRef = useRef<HTMLDivElement | null>(null);
+
+  const ensureMicReady = useCallback(async (): Promise<boolean> => {
+    if (typeof window === "undefined") return false;
+    if (!window.isSecureContext) {
+      setTranscript([
+        "Microphone access requires a secure context. Open this on https:// or localhost.",
+      ]);
+      return false;
+    }
+
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setTranscript([
+        "This browser does not support microphone capture via getUserMedia.",
+      ]);
+      return false;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      for (const track of stream.getTracks()) {
+        track.stop();
+      }
+      return true;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setTranscript([
+        `Microphone permission is required to start a call. Browser error: ${message}`,
+      ]);
+      return false;
+    }
+  }, []);
+
+  useEffect(() => {
+    transcriptRef.current?.scrollTo({
+      top: transcriptRef.current.scrollHeight,
+      behavior: "smooth",
+    });
+  }, [transcript]);
+
+  useEffect(() => {
+    return () => {
+      const vapi = vapiRef.current as { stop?: () => void } | null;
+      vapi?.stop?.();
+      vapiRef.current = null;
+    };
+  }, []);
 
   const startCall = useCallback(async () => {
     try {
       setStatus("connecting");
       setTranscript([]);
+
+      const micReady = await ensureMicReady();
+      if (!micReady) {
+        setStatus("idle");
+        return;
+      }
+
+      const existing = vapiRef.current as { stop?: () => void } | null;
+      existing?.stop?.();
+      vapiRef.current = null;
 
       // Dynamic import — @vapi-ai/web is a client-only dependency
       const { default: Vapi } = await import("@vapi-ai/web");
@@ -45,6 +102,7 @@ export function VapiWidget() {
       vapi.on("call-end", () => {
         setStatus("ended");
         setTranscript((prev) => [...prev, "[Call ended]"]);
+        vapiRef.current = null;
       });
 
       vapi.on("speech-start", () => {
@@ -66,6 +124,7 @@ export function VapiWidget() {
         console.error("VAPI error:", err);
         setTranscript((prev) => [...prev, `[Error: ${String(err)}]`]);
         setStatus("idle");
+        vapiRef.current = null;
       });
 
       await vapi.start(assistantId, {
@@ -82,34 +141,42 @@ export function VapiWidget() {
         `[Failed to start: ${err instanceof Error ? err.message : String(err)}]`,
       ]);
       setStatus("idle");
+      vapiRef.current = null;
     }
-  }, []);
+  }, [ensureMicReady]);
 
   const endCall = useCallback(() => {
     const vapi = vapiRef.current as { stop?: () => void } | null;
     vapi?.stop?.();
     setStatus("ended");
+    setTranscript((prev) => [...prev, "[Call manually ended]"]);
+    vapiRef.current = null;
   }, []);
 
   return (
-    <div className="card" style={{ maxWidth: "600px", margin: "0 auto" }}>
-      <h3 style={{ fontSize: "1.125rem", fontWeight: 600, marginBottom: "1rem" }}>
-        Voice Support
-      </h3>
+    <div className="card widget-shell">
+      <div className="section-title">
+        <span>Voice Support</span>
+        <span className="section-caption">WebRTC / VAPI</span>
+      </div>
 
-      <div style={{ marginBottom: "1rem" }}>
+      <p className="summary-text">
+        Start a live support call. The agent is governed by policy controls and tool-call approvals.
+      </p>
+
+      <div className="widget-controls">
         {status === "idle" && (
           <button onClick={startCall} className="btn btn-primary">
             Talk to Support
           </button>
         )}
         {status === "connecting" && (
-          <button disabled className="btn btn-outline" style={{ opacity: 0.6 }}>
+          <button disabled className="btn btn-outline">
             Connecting...
           </button>
         )}
         {status === "active" && (
-          <button onClick={endCall} className="btn" style={{ background: "var(--red)", color: "white" }}>
+          <button onClick={endCall} className="btn btn-danger">
             End Call
           </button>
         )}
@@ -120,25 +187,18 @@ export function VapiWidget() {
         )}
       </div>
 
-      <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginBottom: "0.5rem" }}>
-        Status: <span className={`badge ${status === "active" ? "badge-active" : "badge-completed"}`}>
+      <div className="widget-status">
+        {status === "active" && <span className="dot-live" aria-hidden="true" />}
+        Status:
+        <span className={`badge ${status === "active" ? "badge-active" : "badge-completed"}`}>
           {status}
         </span>
       </div>
 
       {transcript.length > 0 && (
-        <div
-          style={{
-            background: "var(--bg)",
-            borderRadius: "0.5rem",
-            padding: "0.75rem",
-            maxHeight: "300px",
-            overflow: "auto",
-            fontSize: "0.875rem",
-          }}
-        >
+        <div className="transcript-log" ref={transcriptRef}>
           {transcript.map((line, i) => (
-            <div key={i} style={{ padding: "0.25rem 0", borderBottom: "1px solid var(--border)" }}>
+            <div key={`${line}-${i}`} className="log-line">
               {line}
             </div>
           ))}
