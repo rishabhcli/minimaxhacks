@@ -1,4 +1,6 @@
-# ShieldDesk AI — Project Context for Claude
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## What this project is
 
@@ -26,6 +28,48 @@ Two voice channels:
 - **Knowledge scraping**: rtrvr.ai API
 - **Dashboard**: Next.js 14 (App Router) + Convex React client
 - **Env loading**: `dotenv` — all services load from root `.env` file
+
+## Common commands
+
+```bash
+# Install all workspace dependencies
+npm install
+
+# --- Running services (from project root) ---
+npm run dev:api          # API server with watch mode (port 3000)
+npm run dev:mcp          # MCP tool server with watch mode (port 3001)
+npm run dev:dashboard    # Next.js dashboard (port 3002)
+npm run dev:convex       # Convex dev server (live push)
+
+# Or run directly:
+npx tsx apps/api-server/src/index.ts
+npx tsx mcp-server/src/index.ts
+cd apps/dashboard && npm run dev
+
+# --- Convex ---
+CONVEX_DEPLOYMENT='dev:diligent-lynx-844' npx convex dev --once   # Deploy functions once
+npm run seed             # Seed demo data (4 customers, 5 orders, 3 knowledge docs)
+
+# --- Tests ---
+# API server policy tests (Node built-in test runner, 14 tests):
+node --import tsx --test apps/api-server/tests/**/*.test.ts
+# Or via workspace:
+npm test --workspace=apps/api-server
+
+# Eval harness (10 golden cases, checks policy pass rate + zero false accepts):
+npm run eval --workspace=eval
+# Or directly:
+npx tsx eval/run-eval.ts
+
+# --- Typecheck ---
+npm run typecheck --workspace=apps/api-server
+npm run typecheck --workspace=mcp-server
+
+# --- Build ---
+npm run build --workspace=apps/api-server
+npm run build --workspace=mcp-server
+npm run build --workspace=apps/dashboard
+```
 
 ## Monorepo layout
 
