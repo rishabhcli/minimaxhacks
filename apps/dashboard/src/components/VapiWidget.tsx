@@ -16,6 +16,7 @@ export function VapiWidget() {
   const [status, setStatus] = useState<CallStatus>("idle");
   const [transcript, setTranscript] = useState<string[]>([]);
   const vapiRef = useRef<unknown>(null);
+  const callIdRef = useRef<string | null>(null);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
 
   const ensureMicReady = useCallback(async (): Promise<boolean> => {
@@ -61,6 +62,7 @@ export function VapiWidget() {
       const vapi = vapiRef.current as { stop?: () => void } | null;
       vapi?.stop?.();
       vapiRef.current = null;
+      callIdRef.current = null;
     };
   }, []);
 
@@ -68,6 +70,7 @@ export function VapiWidget() {
     try {
       setStatus("connecting");
       setTranscript([]);
+      callIdRef.current = null;
 
       const micReady = await ensureMicReady();
       if (!micReady) {
@@ -78,6 +81,7 @@ export function VapiWidget() {
       const existing = vapiRef.current as { stop?: () => void } | null;
       existing?.stop?.();
       vapiRef.current = null;
+      callIdRef.current = null;
 
       // Dynamic import — @vapi-ai/web is a client-only dependency
       const { default: Vapi } = await import("@vapi-ai/web");
@@ -99,10 +103,22 @@ export function VapiWidget() {
         setTranscript((prev) => [...prev, "[Call started]"]);
       });
 
+      vapi.on("call-start-success", (event: { callId?: string }) => {
+        if (typeof event.callId === "string" && event.callId.length > 0) {
+          const callId = event.callId;
+          callIdRef.current = callId;
+          setTranscript((prev) => [
+            ...prev,
+            `[Session ${callId.slice(0, 12)}…]`,
+          ]);
+        }
+      });
+
       vapi.on("call-end", () => {
         setStatus("ended");
         setTranscript((prev) => [...prev, "[Call ended]"]);
         vapiRef.current = null;
+        callIdRef.current = null;
       });
 
       vapi.on("speech-start", () => {
@@ -128,15 +144,22 @@ export function VapiWidget() {
         setTranscript((prev) => [...prev, `[Error: ${errMsg}]`]);
         setStatus("idle");
         vapiRef.current = null;
+        callIdRef.current = null;
       });
 
-      await vapi.start(assistantId, {
+      const call = await vapi.start(assistantId, {
         metadata: {
           trustLevel: 2,
           sentiment: "neutral",
           confidence: 0.9,
         },
       });
+      if (call && typeof call === "object" && "id" in call) {
+        const callId = (call as { id?: unknown }).id;
+        if (typeof callId === "string" && callId.length > 0) {
+          callIdRef.current = callId;
+        }
+      }
     } catch (err) {
       console.error("Failed to start VAPI call:", err);
       setTranscript((prev) => [
@@ -145,15 +168,21 @@ export function VapiWidget() {
       ]);
       setStatus("idle");
       vapiRef.current = null;
+      callIdRef.current = null;
     }
   }, [ensureMicReady]);
 
   const endCall = useCallback(() => {
-    const vapi = vapiRef.current as { stop?: () => void } | null;
-    vapi?.stop?.();
+    const vapi = vapiRef.current as { end?: () => void; stop?: () => void } | null;
+    if (vapi?.end) {
+      vapi.end();
+    } else {
+      vapi?.stop?.();
+    }
     setStatus("ended");
     setTranscript((prev) => [...prev, "[Call manually ended]"]);
     vapiRef.current = null;
+    callIdRef.current = null;
   }, []);
 
   return (
