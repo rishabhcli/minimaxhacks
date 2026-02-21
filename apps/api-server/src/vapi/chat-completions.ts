@@ -1,12 +1,11 @@
 import { Router } from "express";
 import { z } from "zod";
 import pino from "pino";
-import { ConvexHttpClient } from "convex/browser";
-import { anyApi } from "convex/server";
 import { config } from "../config.js";
 import { TOOL_FUNCTION_DEFINITIONS } from "./tool-definitions.js";
+import { convex } from "../convex-client.js";
+import { anyApi } from "convex/server";
 
-const convex = new ConvexHttpClient(config.CONVEX_URL);
 const api = anyApi;
 
 const log = pino({ name: "vapi-chat-completions" });
@@ -65,6 +64,80 @@ AVAILABLE TOOLS:
 - account_update: Update customer account fields
 - order_refund: Process a refund for an order`;
 
+type KnowledgeDoc = {
+  title?: string;
+  content?: string;
+  sourceUrl?: string;
+};
+
+function stripThinkBlocks(content: string): string {
+  const cleaned = content
+    .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    .trim();
+  return cleaned.length > 0
+    ? cleaned
+    : "I can help with that. Could you share a bit more detail?";
+}
+
+function latestUserText(
+  messages: Array<z.infer<typeof MessageSchema>>
+): string | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg?.role === "user" && typeof msg.content === "string") {
+      const text = msg.content.trim();
+      if (text.length > 0) return text;
+    }
+  }
+  return null;
+}
+
+function buildKbContext(docs: KnowledgeDoc[]): string {
+  if (docs.length === 0) {
+    return "No relevant knowledge documents were retrieved for this turn.";
+  }
+
+  return docs
+    .slice(0, 5)
+    .map((doc, idx) => {
+      const title = doc.title ?? `Document ${idx + 1}`;
+      const source = doc.sourceUrl ?? "unknown-source";
+      const snippet = (doc.content ?? "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 400);
+      return `[${idx + 1}] ${title}\nSource: ${source}\nSnippet: ${snippet}`;
+    })
+    .join("\n\n");
+}
+
+async function buildSystemPromptWithKnowledge(
+  messages: Array<z.infer<typeof MessageSchema>>
+): Promise<string> {
+  const userText = latestUserText(messages);
+  if (!userText) return SYSTEM_PROMPT;
+
+  try {
+    const docs = (await convex.query(api.knowledgeDocuments.search, {
+      query: userText,
+    })) as KnowledgeDoc[];
+    const kbContext = buildKbContext(Array.isArray(docs) ? docs : []);
+
+    return `${SYSTEM_PROMPT}
+
+KNOWLEDGE CONTEXT (retrieved from ShieldDesk KB):
+${kbContext}
+
+GROUNDING RULES:
+- Prioritize retrieved context for factual support policies/processes.
+- If context is insufficient, say so and ask a clarifying question or use a tool.
+- Do not invent policy details not present in context or tool results.`;
+  } catch (err) {
+    log.warn({ err }, "RAG lookup failed, proceeding without KB context");
+    return SYSTEM_PROMPT;
+  }
+}
+
 // ── POST /vapi/chat/completions ──
 
 router.post("/chat/completions", async (req, res) => {
@@ -92,15 +165,14 @@ router.post("/chat/completions", async (req, res) => {
     "Chat completion request from VAPI"
   );
 
+  // Build system prompt with RAG context (pre-computed before stream starts)
+  const resolvedSystemPrompt = await buildSystemPromptWithKnowledge(messages);
+
   // Filter out any existing system messages from VAPI, inject ours
   const userMessages = messages.filter((m) => m.role !== "system");
-
-  // RAG context injection is handled by the faq.search tool via tool-calls webhook.
-  // Doing it here adds 3-5s latency (embedding + vector search) which causes VAPI timeouts.
-  // The agent will use faq.search when it needs knowledge base info.
   const systemMessage = {
     role: "system" as const,
-    content: SYSTEM_PROMPT,
+    content: resolvedSystemPrompt,
   };
   const fullMessages = [systemMessage, ...userMessages];
 

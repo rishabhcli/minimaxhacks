@@ -33,6 +33,29 @@ export interface GovernanceResult {
   riskScore: number;
 }
 
+function buildArmorIqPlan(input: GovernanceInput): string {
+  return JSON.stringify({
+    goal: `Execute governed support action: ${input.toolName}`,
+    tool: input.toolName,
+    args: input.toolArgs,
+    steps: [
+      {
+        action: input.toolName,
+        mcp: config.ARMORIQ_MCP_ID,
+        inputs: input.toolArgs,
+      },
+    ],
+  });
+}
+
+function formatExecutionError(error: unknown): string {
+  const base = error instanceof Error ? error.message : "unknown error";
+  if (base.includes("MCP invocation failed: HTTP 400")) {
+    return `${base}. Verify ARMORIQ_MCP_ID is correctly registered and reachable in ArmorIQ MCP registry.`;
+  }
+  return base;
+}
+
 /**
  * Execute a tool call with full governance:
  * 1. Run decision function
@@ -96,11 +119,7 @@ export async function executeWithGovernance(
 
   if (isArmorIqEnabled()) {
     try {
-      const plan = JSON.stringify({
-        tool: input.toolName,
-        args: input.toolArgs,
-        decision: policyDecision.decision,
-      });
+      const plan = buildArmorIqPlan(input);
       const prompt = `Execute ${input.toolName} for conversation ${input.conversationId ?? "unknown"}`;
 
       const planCapture = await capturePlan(
@@ -167,7 +186,7 @@ export async function executeWithGovernance(
     return {
       ...base,
       decision: "deny",
-      reason: `Execution failed: ${err instanceof Error ? err.message : "unknown error"}`,
+      reason: `Execution failed: ${formatExecutionError(err)}`,
     };
   }
 }

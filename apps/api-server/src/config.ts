@@ -17,6 +17,9 @@ const EnvSchema = z.object({
   ARMORIQ_API_KEY: z.string().default(""),
   ARMORIQ_USER_ID: z.string().default(""),
   ARMORIQ_AGENT_ID: z.string().default(""),
+  ARMORIQ_CONTEXT_ID: z.string().default("default"),
+  ARMORIQ_MCP_ID: z.string().default("shielddesk-mcp"),
+  ARMORIQ_LOCAL_PROXY_MODE: z.coerce.boolean().default(false),
   PUBLIC_URL: z.string().default("http://localhost:3000"),
   // Plivo
   PLIVO_AUTH_ID: z.string().default(""),

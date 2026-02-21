@@ -3,6 +3,7 @@
 import { useQuery } from "convex/react";
 import { api } from "@/lib/api";
 import { useParams } from "next/navigation";
+import Link from "next/link";
 
 // Types for Convex documents (anyApi returns untyped results)
 interface Transcript {
@@ -44,149 +45,145 @@ export default function ConversationDetailPage() {
   const events = useQuery(api.conversationEvents.byConversation, { conversationId: id }) as ConversationEvent[] | undefined;
 
   if (conversation === undefined) {
-    return <p style={{ color: "var(--text-muted)" }}>Loading...</p>;
+    return (
+      <div className="card empty-state">
+        <strong>Loading conversation</strong>
+        Waiting for live conversation data.
+      </div>
+    );
   }
 
   if (conversation === null) {
-    return <p style={{ color: "var(--red)" }}>Conversation not found.</p>;
+    return (
+      <div className="card empty-state">
+        <strong>Conversation not found</strong>
+        The record may have been removed or the ID is invalid.
+      </div>
+    );
   }
 
   return (
-    <div>
-      <a href="/" style={{ fontSize: "0.875rem", color: "var(--text-muted)", marginBottom: "1rem", display: "inline-block" }}>
-        &larr; Back to conversations
-      </a>
-
-      {/* Panel 1: Conversation Card */}
-      <div className="card" style={{ marginBottom: "1.5rem" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <div>
-            <h2 style={{ fontSize: "1.25rem", fontWeight: 700, marginBottom: "0.5rem" }}>
-              Conversation
-            </h2>
-            <div style={{ display: "flex", gap: "0.75rem", alignItems: "center" }}>
-              <span className={`badge ${conversation.channelType === "vapi_web" ? "badge-vapi" : "badge-plivo"}`}>
-                {conversation.channelType === "vapi_web" ? "Web (VAPI)" : "Phone (Plivo)"}
-              </span>
-              <span className={`badge ${conversation.status === "active" ? "badge-active" : "badge-completed"}`}>
-                {conversation.status}
-              </span>
-              <span className="badge" style={{ background: "rgba(99,102,241,0.1)", color: "var(--accent)" }}>
-                Trust Level {conversation.trustLevel}
-              </span>
-              {conversation.sentimentScore && (
-                <span className="badge" style={{ background: "rgba(234,179,8,0.1)", color: "var(--yellow)" }}>
-                  {conversation.sentimentScore}
-                </span>
-              )}
-            </div>
-          </div>
-          <div style={{ textAlign: "right", fontSize: "0.75rem", color: "var(--text-muted)" }}>
-            <div>Started: {new Date(conversation.startedAt).toLocaleString()}</div>
-            {conversation.endedAt && (
-              <div>Ended: {new Date(conversation.endedAt).toLocaleString()}</div>
-            )}
-            <div>Session: {String(conversation.channelSessionId).slice(0, 12)}...</div>
-          </div>
+    <div className="page-stack">
+      <div className="detail-head">
+        <Link href="/" className="back-link">
+          &larr; Back to conversations
+        </Link>
+        <div className="conversation-meta">
+          <span className={`badge ${conversation.channelType === "vapi_web" ? "badge-vapi" : "badge-plivo"}`}>
+            {conversation.channelType === "vapi_web" ? "Web (VAPI)" : "Phone (Plivo)"}
+          </span>
+          <span className={`badge ${conversation.status === "active" ? "badge-active" : "badge-completed"}`}>
+            {conversation.status}
+          </span>
+          <span className="badge badge-trust">Trust Level {conversation.trustLevel}</span>
+          {conversation.sentimentScore && (
+            <span className="badge badge-escalate">{conversation.sentimentScore}</span>
+          )}
         </div>
       </div>
+
+      <section className="card">
+        <div className="section-title">
+          <span>Conversation Context</span>
+          <span className="section-caption">
+            Session {String(conversation.channelSessionId).slice(0, 18)}...
+          </span>
+        </div>
+        <div className="grid-3">
+          <div className="stat-block">
+            <p className="section-caption">Started</p>
+            <p>{new Date(conversation.startedAt).toLocaleString()}</p>
+          </div>
+          <div className="stat-block">
+            <p className="section-caption">Ended</p>
+            <p>{conversation.endedAt ? new Date(conversation.endedAt).toLocaleString() : "In progress"}</p>
+          </div>
+          <div className="stat-block">
+            <p className="section-caption">Customer</p>
+            <p>{conversation.customerId ? String(conversation.customerId) : "Anonymous"}</p>
+          </div>
+        </div>
+      </section>
 
       <div className="grid-2">
-        {/* Panel 2: Live Transcript */}
-        <div className="card" style={{ maxHeight: "500px", overflow: "auto" }}>
-          <h3 style={{ fontSize: "1rem", fontWeight: 600, marginBottom: "0.75rem" }}>
-            Transcript
-          </h3>
-          {transcripts === undefined && <p style={{ color: "var(--text-muted)" }}>Loading...</p>}
-          {transcripts && transcripts.length === 0 && (
-            <p style={{ color: "var(--text-muted)", fontSize: "0.875rem" }}>No transcript yet.</p>
-          )}
-          {transcripts?.map((t: Transcript) => (
-            <div key={t._id} className="transcript-line">
-              <span
-                className="transcript-speaker"
-                style={{ color: t.speaker === "customer" ? "var(--blue)" : "var(--green)" }}
-              >
-                {t.speaker === "customer" ? "Customer" : "Agent"}
-              </span>
-              <span style={{ fontSize: "0.875rem" }}>{t.text}</span>
-            </div>
-          ))}
-        </div>
-
-        {/* Panel 3: Agent Actions (governance decisions) */}
-        <div className="card" style={{ maxHeight: "500px", overflow: "auto" }}>
-          <h3 style={{ fontSize: "1rem", fontWeight: 600, marginBottom: "0.75rem" }}>
-            Agent Actions
-          </h3>
-          {actions === undefined && <p style={{ color: "var(--text-muted)" }}>Loading...</p>}
-          {actions && actions.length === 0 && (
-            <p style={{ color: "var(--text-muted)", fontSize: "0.875rem" }}>No actions yet.</p>
-          )}
-          {actions?.map((a: AgentAction) => (
-            <div key={a._id} className="action-row">
-              <div>
-                <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.25rem" }}>
-                  <span style={{ fontWeight: 600, fontSize: "0.875rem" }}>{a.toolName}</span>
-                  {a.policyDecision && (
-                    <span className={`badge badge-${a.policyDecision}`}>
-                      {a.policyDecision.toUpperCase()}
-                    </span>
-                  )}
-                  {a.armoriqVerified && (
-                    <span className="badge" style={{ background: "rgba(34,197,94,0.1)", color: "var(--green)" }}>
-                      Verified
-                    </span>
-                  )}
-                </div>
-                <div style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
-                  {a.policyReason}
-                </div>
-              </div>
-              <div style={{ textAlign: "right", fontSize: "0.75rem", color: "var(--text-muted)" }}>
-                <div>Conf: {a.confidence?.toFixed(2) ?? "\u2014"}</div>
-                <div>Risk: {a.riskScore?.toFixed(2) ?? "\u2014"}</div>
-                <div>Thresh: {a.effectiveThreshold?.toFixed(3) ?? "\u2014"}</div>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Panel 4: Conversation Events Timeline */}
-      <div className="card" style={{ marginTop: "1.5rem" }}>
-        <h3 style={{ fontSize: "1rem", fontWeight: 600, marginBottom: "0.75rem" }}>
-          Timeline
-        </h3>
-        {events === undefined && <p style={{ color: "var(--text-muted)" }}>Loading...</p>}
-        {events && events.length === 0 && (
-          <p style={{ color: "var(--text-muted)", fontSize: "0.875rem" }}>No events yet.</p>
-        )}
-        {events?.map((e: ConversationEvent) => (
-          <div key={e._id} className="timeline-item">
-            <div style={{ minWidth: "6rem" }}>
-              <span className={`badge ${getBadgeClass(e.kind)}`}>
-                {formatKind(e.kind)}
-              </span>
-            </div>
-            <div style={{ flex: 1 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-                <span style={{ fontSize: "0.75rem", fontWeight: 600, color: "var(--text-muted)" }}>
-                  {e.actorKind}
-                </span>
-                <span style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
-                  {new Date(e.ts).toLocaleTimeString()}
-                </span>
-              </div>
-              <div style={{ fontSize: "0.875rem", marginTop: "0.25rem" }}>
-                {typeof e.payload === "object" && e.payload !== null
-                  ? JSON.stringify(e.payload)
-                  : String(e.payload ?? "")}
-              </div>
-            </div>
+        <section className="card">
+          <div className="section-title">
+            <span>Transcript</span>
+            <span className="section-caption">{transcripts?.length ?? 0} turns</span>
           </div>
-        ))}
+          <div className="scroll-panel">
+            {transcripts === undefined && <p className="summary-text">Loading transcript...</p>}
+            {transcripts && transcripts.length === 0 && <p className="summary-text">No transcript yet.</p>}
+            {transcripts?.map((t: Transcript) => (
+              <div key={t._id} className="transcript-line">
+                <span className={`transcript-speaker ${getSpeakerClass(t.speaker)}`}>
+                  {t.speaker === "customer" ? "Customer" : "Agent"}
+                </span>
+                <div>
+                  <p>{t.text}</p>
+                  <p className="section-caption">{new Date(t.ts).toLocaleTimeString()}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section className="card">
+          <div className="section-title">
+            <span>Agent Actions</span>
+            <span className="section-caption">{actions?.length ?? 0} calls</span>
+          </div>
+          <div className="scroll-panel">
+            {actions === undefined && <p className="summary-text">Loading actions...</p>}
+            {actions && actions.length === 0 && <p className="summary-text">No actions yet.</p>}
+            {actions?.map((a: AgentAction) => (
+              <div key={a._id} className="action-row">
+                <div>
+                  <div className="conversation-meta">
+                    <span className="badge badge-completed">{a.toolName}</span>
+                    {a.policyDecision && (
+                      <span className={`badge badge-${a.policyDecision}`}>
+                        {a.policyDecision.toUpperCase()}
+                      </span>
+                    )}
+                    {a.armoriqVerified && <span className="badge badge-verified">Verified</span>}
+                  </div>
+                  <p className="summary-text">{a.policyReason || "No policy reason available."}</p>
+                </div>
+                <div className="metrics-col">
+                  <div>Conf: {a.confidence?.toFixed(2) ?? "\u2014"}</div>
+                  <div>Risk: {a.riskScore?.toFixed(2) ?? "\u2014"}</div>
+                  <div>Thresh: {a.effectiveThreshold?.toFixed(3) ?? "\u2014"}</div>
+                  <div>Status: {a.status}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
       </div>
+
+      <section className="card">
+        <div className="section-title">
+          <span>Timeline</span>
+          <span className="section-caption">{events?.length ?? 0} events</span>
+        </div>
+        <div className="scroll-panel">
+          {events === undefined && <p className="summary-text">Loading timeline...</p>}
+          {events && events.length === 0 && <p className="summary-text">No events yet.</p>}
+          {events?.map((e: ConversationEvent) => (
+            <div key={e._id} className="timeline-item">
+              <div className="conversation-meta">
+                <span className={`badge ${getBadgeClass(e.kind)}`}>{formatKind(e.kind)}</span>
+                <span className="section-caption">{new Date(e.ts).toLocaleTimeString()}</span>
+              </div>
+              <div>
+                <p className="section-caption">{e.actorKind}</p>
+                <pre className="event-body">{formatPayload(e.payload)}</pre>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
     </div>
   );
 }
@@ -203,4 +200,22 @@ function getBadgeClass(kind: string): string {
 
 function formatKind(kind: string): string {
   return kind.replace(/_/g, " ");
+}
+
+function getSpeakerClass(speaker: string): string {
+  return speaker === "customer" ? "speaker-customer" : "speaker-agent";
+}
+
+function formatPayload(payload: unknown): string {
+  if (payload == null) {
+    return "";
+  }
+  if (typeof payload === "string") {
+    return payload;
+  }
+  try {
+    return JSON.stringify(payload, null, 2);
+  } catch {
+    return String(payload);
+  }
 }

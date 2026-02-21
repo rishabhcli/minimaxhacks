@@ -4,8 +4,11 @@ import pino from "pino";
 import { executeWithGovernance } from "../policy/executor.js";
 import { toMcpToolName } from "./tool-definitions.js";
 import type { Sentiment, TrustLevel } from "@shielddesk/shared";
+import { convex } from "../convex-client.js";
+import { anyApi } from "convex/server";
 
 const log = pino({ name: "vapi-tool-calls" });
+const api = anyApi;
 
 const router = Router();
 
@@ -28,6 +31,34 @@ const VapiToolCallWebhookSchema = z.object({
     metadata: z.record(z.unknown()).optional(),
   }),
 });
+
+type ActionStatus =
+  | "executed"
+  | "escalated"
+  | "blocked"
+  | "failed";
+
+function toStoredResultText(stored: unknown): string | null {
+  if (typeof stored === "string") return stored;
+  if (stored && typeof stored === "object") {
+    const response = (stored as Record<string, unknown>).response;
+    if (typeof response === "string") return response;
+  }
+  return null;
+}
+
+function statusForDecision(decision: "allow" | "deny" | "escalate"): ActionStatus {
+  if (decision === "allow") return "executed";
+  if (decision === "escalate") return "escalated";
+  return "blocked";
+}
+
+type ConversationRecord = {
+  _id: string;
+  customerId?: string;
+  trustLevel?: number;
+  sentimentScore?: string;
+};
 
 // ── POST /vapi/tool-calls ──
 // VAPI sends ALL webhook events to serverUrl (status-update, speech-update,
@@ -54,42 +85,85 @@ router.post("/tool-calls", async (req, res) => {
 
   const { message } = parseResult.data;
   const { toolCallList, call, metadata } = message;
+  const callId = typeof call?.id === "string" ? call.id : "unknown-call";
 
   log.info(
     {
       toolCount: toolCallList.length,
       tools: toolCallList.map((tc) => tc.function.name),
-      callId: call?.id,
+      callId,
     },
     "Tool-calls webhook from VAPI"
   );
 
   // Extract session context from metadata (set by VAPI widget via assistantOverrides)
   const sessionMeta = metadata ?? {};
-  const trustLevel = (
+  let trustLevel = (
     typeof sessionMeta.trustLevel === "number"
       ? sessionMeta.trustLevel
       : 2
   ) as TrustLevel;
-  const sentiment = (
+  let sentiment = (
     typeof sessionMeta.sentiment === "string"
       ? sessionMeta.sentiment
       : "neutral"
   ) as Sentiment;
-  const conversationId =
+  let conversationId =
     typeof sessionMeta.conversationId === "string"
       ? sessionMeta.conversationId
       : undefined;
-  const customerId =
+  let customerId =
     typeof sessionMeta.customerId === "string"
       ? sessionMeta.customerId
       : undefined;
+
+  // Enrich conversation context from Convex if not provided in metadata
+  if (!conversationId && callId !== "unknown-call") {
+    try {
+      const conv = (await convex.query(api.conversations.getBySessionId, {
+        channelSessionId: callId,
+      })) as ConversationRecord | null;
+      if (conv?._id) {
+        conversationId = conv._id;
+      }
+    } catch (err) {
+      log.warn({ err, callId }, "Failed to resolve conversation by call ID");
+    }
+  }
+
+  if (conversationId) {
+    try {
+      const conv = (await convex.query(api.conversations.getById, {
+        id: conversationId,
+      })) as ConversationRecord | null;
+      if (conv) {
+        if (!customerId && conv.customerId) {
+          customerId = conv.customerId;
+        }
+        if (
+          typeof sessionMeta.trustLevel !== "number" &&
+          typeof conv.trustLevel === "number"
+        ) {
+          trustLevel = conv.trustLevel as TrustLevel;
+        }
+        if (
+          typeof sessionMeta.sentiment !== "string" &&
+          typeof conv.sentimentScore === "string"
+        ) {
+          sentiment = conv.sentimentScore as Sentiment;
+        }
+      }
+    } catch (err) {
+      log.warn({ err, conversationId }, "Failed to load conversation context");
+    }
+  }
 
   // Process each tool call through governance
   const results = await Promise.all(
     toolCallList.map(async (toolCall) => {
       // VAPI/MiniMax use underscore names (faq_search); MCP/governance use dots (faq.search)
       const toolName = toMcpToolName(toolCall.function.name);
+      const idempotencyKey = `${callId}:${toolCall.id}:${toolName}`;
 
       // Parse arguments — VAPI may send as string or object
       let toolArgs: Record<string, unknown>;
@@ -118,6 +192,31 @@ router.post("/tool-calls", async (req, res) => {
         : 0.90;
 
       try {
+        // Idempotency check — skip re-execution if already processed
+        const existing = await convex.query(api.agentActions.byIdempotencyKey, {
+          idempotencyKey,
+        });
+        if (existing) {
+          const replayResult =
+            toStoredResultText(existing.result) ??
+            JSON.stringify({
+              replayed: true,
+              decision: existing.policyDecision ?? "unknown",
+              message:
+                existing.policyReason ??
+                "This request was already processed.",
+            });
+
+          log.info(
+            { idempotencyKey, toolName },
+            "Returning idempotent replay result"
+          );
+          return {
+            toolCallId: toolCall.id,
+            result: replayResult,
+          };
+        }
+
         const govResult = await executeWithGovernance({
           toolName,
           toolArgs,
@@ -146,9 +245,35 @@ router.post("/tool-calls", async (req, res) => {
             "content" in (govResult.toolResult as Record<string, unknown>)
               ? (
                   (govResult.toolResult as { content: Array<{ text: string }> })
-                    .content[0]?.text ?? "{}"
+                  .content[0]?.text ?? "{}"
                 )
               : JSON.stringify(govResult.toolResult ?? {});
+
+          try {
+            await convex.mutation(api.agentActions.log, {
+              conversationId,
+              customerId,
+              toolName,
+              toolArgs,
+              status: statusForDecision(govResult.decision),
+              confidence,
+              riskScore: govResult.riskScore,
+              effectiveThreshold: govResult.effectiveThreshold,
+              sentimentAtTime: sentiment,
+              policyDecision: govResult.decision,
+              policyReason: govResult.reason,
+              armoriqTokenId: govResult.armoriqTokenId,
+              armoriqPlanHash: govResult.armoriqPlanHash,
+              armoriqVerified: govResult.armoriqVerified,
+              result: { response: resultContent },
+              idempotencyKey,
+            });
+          } catch (logErr) {
+            log.error(
+              { err: logErr, toolName, idempotencyKey },
+              "Failed to persist action log"
+            );
+          }
 
           return {
             toolCallId: toolCall.id,
@@ -157,30 +282,108 @@ router.post("/tool-calls", async (req, res) => {
         }
 
         if (govResult.decision === "escalate") {
+          const escalatedResult = JSON.stringify({
+            escalated: true,
+            message: `This action requires additional verification. ${govResult.reason}. I've flagged this for a human agent to review.`,
+          });
+
+          try {
+            await convex.mutation(api.agentActions.log, {
+              conversationId,
+              customerId,
+              toolName,
+              toolArgs,
+              status: statusForDecision(govResult.decision),
+              confidence,
+              riskScore: govResult.riskScore,
+              effectiveThreshold: govResult.effectiveThreshold,
+              sentimentAtTime: sentiment,
+              policyDecision: govResult.decision,
+              policyReason: govResult.reason,
+              armoriqTokenId: govResult.armoriqTokenId,
+              armoriqPlanHash: govResult.armoriqPlanHash,
+              armoriqVerified: govResult.armoriqVerified,
+              result: { response: escalatedResult },
+              idempotencyKey,
+            });
+          } catch (logErr) {
+            log.error(
+              { err: logErr, toolName, idempotencyKey },
+              "Failed to persist action log"
+            );
+          }
+
           return {
             toolCallId: toolCall.id,
-            result: JSON.stringify({
-              escalated: true,
-              message: `This action requires additional verification. ${govResult.reason}. I've flagged this for a human agent to review.`,
-            }),
+            result: escalatedResult,
           };
         }
 
         // DENY
+        const deniedResult = JSON.stringify({
+          denied: true,
+          message: `This action cannot be performed automatically. ${govResult.reason}.`,
+        });
+
+        try {
+          await convex.mutation(api.agentActions.log, {
+            conversationId,
+            customerId,
+            toolName,
+            toolArgs,
+            status: statusForDecision(govResult.decision),
+            confidence,
+            riskScore: govResult.riskScore,
+            effectiveThreshold: govResult.effectiveThreshold,
+            sentimentAtTime: sentiment,
+            policyDecision: govResult.decision,
+            policyReason: govResult.reason,
+            armoriqTokenId: govResult.armoriqTokenId,
+            armoriqPlanHash: govResult.armoriqPlanHash,
+            armoriqVerified: govResult.armoriqVerified,
+            result: { response: deniedResult },
+            idempotencyKey,
+          });
+        } catch (logErr) {
+          log.error(
+            { err: logErr, toolName, idempotencyKey },
+            "Failed to persist action log"
+          );
+        }
+
         return {
           toolCallId: toolCall.id,
-          result: JSON.stringify({
-            denied: true,
-            message: `This action cannot be performed automatically. ${govResult.reason}.`,
-          }),
+          result: deniedResult,
         };
       } catch (err) {
         log.error({ err, toolName }, "Governance execution error");
+        try {
+          await convex.mutation(api.agentActions.log, {
+            conversationId,
+            customerId,
+            toolName,
+            toolArgs,
+            status: "failed",
+            confidence,
+            sentimentAtTime: sentiment,
+            errorMessage:
+              err instanceof Error ? err.message : "Unknown governance error",
+            idempotencyKey,
+          });
+        } catch (logErr) {
+          log.error(
+            { err: logErr, toolName, idempotencyKey },
+            "Failed to persist failed action log"
+          );
+        }
+
+        const failedResult = JSON.stringify({
+          error: "I encountered an issue processing that request. Let me create a ticket for you instead.",
+        });
+
         return {
           toolCallId: toolCall.id,
-          result: JSON.stringify({
-            error: "I encountered an issue processing that request. Let me create a ticket for you instead.",
-          }),
+          result: failedResult,
         };
       }
     })
