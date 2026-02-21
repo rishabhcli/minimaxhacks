@@ -4,5 +4,6 @@ dist/
 .env.local
 .convex/
 .next/
+.convex-tsc/
 *.tsbuildinfo
 .claude/*.local.*

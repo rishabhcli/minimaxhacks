@@ -1,8 +1,11 @@
 "use client";
 
+import { ConvexClientProvider } from "@/components/ConvexClientProvider";
 import { useQuery } from "convex/react";
 import { api } from "@/lib/api";
 import Link from "next/link";
+import { useState } from "react";
+import { ConversationDetail } from "@/components/ConversationDetail";
 
 interface Conversation {
   _id: string;
@@ -17,7 +20,7 @@ interface Conversation {
   summary?: string;
 }
 
-export default function HomePage() {
+function HomePageContent() {
   const conversations = useQuery(api.conversations.list) as Conversation[] | undefined;
   const total = conversations?.length ?? 0;
   const active = conversations?.filter((conv) => conv.status === "active").length ?? 0;
@@ -28,8 +31,9 @@ export default function HomePage() {
         conversations!.reduce((sum, conv) => sum + conv.trustLevel, 0) / total
       ).toFixed(2)
     : "0.00";
+  const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
 
-  return (
+  const content = (
     <div className="page-stack">
       <section className="hero">
         <h2>Support Operations Console</h2>
@@ -80,8 +84,8 @@ export default function HomePage() {
 
       <div className="list-stack">
         {conversations?.map((conv: Conversation) => (
-          <Link key={conv._id} href={`/conversations/${conv._id}`} className="card card-hover conversation-card">
-            <div className="conversation-main">
+          <div key={conv._id} className="card card-hover conversation-card">
+            <Link href={`/conversations/${conv._id}`} className="conversation-main conversation-link">
               <div className="conversation-meta">
                 <span className={`badge ${conv.channelType === "vapi_web" ? "badge-vapi" : "badge-plivo"}`}>
                   {conv.channelType === "vapi_web" ? "Web" : "Phone"}
@@ -97,7 +101,7 @@ export default function HomePage() {
               <div className="conversation-meta">
                 <span className="meta-time">{new Date(conv.startedAt).toLocaleString()}</span>
               </div>
-            </div>
+            </Link>
 
             <div className="conversation-main">
               <strong>
@@ -107,9 +111,46 @@ export default function HomePage() {
             </div>
 
             {conv.summary && <p className="summary-text">{conv.summary}</p>}
-          </Link>
+
+            <div className="conversation-actions">
+              <Link href={`/conversations/${conv._id}`} className="btn btn-outline small">
+                Open page
+              </Link>
+              <button
+                className="btn btn-primary small"
+                onClick={() => setSelectedConversationId(conv._id)}
+              >
+                Quick view
+              </button>
+            </div>
+          </div>
         ))}
       </div>
+
+      {selectedConversationId && (
+        <div className="modal-overlay" role="dialog" aria-modal="true">
+          <div className="modal-card">
+            <ConversationDetail
+              conversationId={selectedConversationId}
+              onClose={() => setSelectedConversationId(null)}
+            />
+          </div>
+        </div>
+      )}
     </div>
+  );
+
+  return (
+    <>
+      {content}
+    </>
+  );
+}
+
+export default function HomePage() {
+  return (
+    <ConvexClientProvider>
+      <HomePageContent />
+    </ConvexClientProvider>
   );
 }
