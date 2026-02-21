@@ -5,6 +5,7 @@ import { ConvexHttpClient } from "convex/browser";
 import { anyApi } from "convex/server";
 import { config } from "../config.js";
 import { TOOL_FUNCTION_DEFINITIONS } from "./tool-definitions.js";
+import { analyzeSentiment, setSentiment, getSentiment } from "./sentiment.js";
 
 const convex = new ConvexHttpClient(config.CONVEX_URL);
 const api = anyApi;
@@ -94,6 +95,19 @@ router.post("/chat/completions", async (req, res) => {
 
   // Filter out any existing system messages from VAPI, inject ours
   const userMessages = messages.filter((m) => m.role !== "system");
+
+  // Fire-and-forget sentiment analysis on the latest user message
+  const callId = typeof call?.id === "string" ? call.id : undefined;
+  const latestUserMsg = [...userMessages].reverse().find((m) => m.role === "user");
+  if (callId && latestUserMsg?.content) {
+    analyzeSentiment(latestUserMsg.content).then((sentiment) => {
+      const prev = getSentiment(callId);
+      if (sentiment !== prev) {
+        log.info({ callId, prev, sentiment }, "Sentiment changed");
+        setSentiment(callId, sentiment);
+      }
+    }).catch(() => { /* sentiment is best-effort */ });
+  }
 
   // RAG context injection is handled by the faq.search tool via tool-calls webhook.
   // Doing it here adds 3-5s latency (embedding + vector search) which causes VAPI timeouts.

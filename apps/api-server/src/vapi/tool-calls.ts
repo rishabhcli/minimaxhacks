@@ -3,6 +3,7 @@ import { z } from "zod";
 import pino from "pino";
 import { executeWithGovernance } from "../policy/executor.js";
 import { toMcpToolName } from "./tool-definitions.js";
+import { getSentiment } from "./sentiment.js";
 import type { Sentiment, TrustLevel } from "@shielddesk/shared";
 
 const log = pino({ name: "vapi-tool-calls" });
@@ -71,11 +72,11 @@ router.post("/tool-calls", async (req, res) => {
       ? sessionMeta.trustLevel
       : 2
   ) as TrustLevel;
-  const sentiment = (
-    typeof sessionMeta.sentiment === "string"
-      ? sessionMeta.sentiment
-      : "neutral"
-  ) as Sentiment;
+  // Prefer live-detected sentiment from cache, fall back to metadata override, then "neutral"
+  const callId = typeof call?.id === "string" ? call.id : undefined;
+  const detectedSentiment = callId ? getSentiment(callId) : "neutral";
+  const metaSentiment = typeof sessionMeta.sentiment === "string" ? sessionMeta.sentiment : null;
+  const sentiment = (detectedSentiment !== "neutral" ? detectedSentiment : metaSentiment ?? "neutral") as Sentiment;
   const conversationId =
     typeof sessionMeta.conversationId === "string"
       ? sessionMeta.conversationId

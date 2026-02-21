@@ -3,24 +3,42 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 
 type CallStatus = "idle" | "connecting" | "active" | "ended";
+type Sentiment = "frustrated" | "neutral" | "satisfied" | "calm";
+
+const SENTIMENT_EMOJI: Record<Sentiment, string> = {
+  frustrated: "frustrated",
+  neutral: "neutral",
+  satisfied: "satisfied",
+  calm: "calm",
+};
+
+interface VapiWidgetProps {
+  trustLevel?: 1 | 2 | 3 | 4;
+  sentimentOverride?: Sentiment;
+}
 
 /**
  * VAPI web widget component.
  * Uses @vapi-ai/web SDK to start a voice call in the browser.
- *
- * Environment variables needed:
- * - NEXT_PUBLIC_VAPI_PUBLIC_KEY
- * - NEXT_PUBLIC_VAPI_ASSISTANT_ID
  */
-export function VapiWidget() {
+export function VapiWidget({ trustLevel = 2, sentimentOverride }: VapiWidgetProps) {
   const [status, setStatus] = useState<CallStatus>("idle");
   const [transcript, setTranscript] = useState<string[]>([]);
+  const [liveSentiment, setLiveSentiment] = useState<Sentiment>("neutral");
   const vapiRef = useRef<unknown>(null);
+
+  // If sentimentOverride changes, update live sentiment display
+  useEffect(() => {
+    if (sentimentOverride) {
+      setLiveSentiment(sentimentOverride);
+    }
+  }, [sentimentOverride]);
 
   const startCall = useCallback(async () => {
     try {
       setStatus("connecting");
       setTranscript([]);
+      setLiveSentiment(sentimentOverride ?? "neutral");
 
       // Dynamic import — @vapi-ai/web is a client-only dependency
       const { default: Vapi } = await import("@vapi-ai/web");
@@ -73,8 +91,8 @@ export function VapiWidget() {
 
       await vapi.start(assistantId, {
         metadata: {
-          trustLevel: 2,
-          sentiment: "neutral",
+          trustLevel,
+          sentiment: sentimentOverride ?? "neutral",
           confidence: 0.9,
         },
       });
@@ -86,7 +104,7 @@ export function VapiWidget() {
       ]);
       setStatus("idle");
     }
-  }, []);
+  }, [trustLevel, sentimentOverride]);
 
   const endCall = useCallback(() => {
     const vapi = vapiRef.current as { stop?: () => void } | null;
@@ -94,8 +112,10 @@ export function VapiWidget() {
     setStatus("ended");
   }, []);
 
+  const trustLabels: Record<number, string> = { 1: "Anonymous", 2: "Authenticated", 3: "Premium", 4: "VIP" };
+
   return (
-    <div className="card" style={{ maxWidth: "600px", margin: "0 auto" }}>
+    <div className="card" style={{ height: "100%" }}>
       <h3 style={{ fontSize: "1.125rem", fontWeight: 600, marginBottom: "1rem" }}>
         Voice Support
       </h3>
@@ -123,9 +143,21 @@ export function VapiWidget() {
         )}
       </div>
 
-      <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginBottom: "0.5rem" }}>
-        Status: <span className={`badge ${status === "active" ? "badge-active" : "badge-completed"}`}>
-          {status}
+      <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap", fontSize: "0.75rem", color: "var(--text-muted)", marginBottom: "0.5rem" }}>
+        <span>
+          Status: <span className={`badge ${status === "active" ? "badge-active" : "badge-completed"}`}>
+            {status}
+          </span>
+        </span>
+        <span>
+          Sentiment: <span className={`badge ${liveSentiment === "frustrated" ? "badge-deny" : liveSentiment === "calm" || liveSentiment === "satisfied" ? "badge-allow" : "badge-completed"}`}>
+            {SENTIMENT_EMOJI[liveSentiment]} {liveSentiment}
+          </span>
+        </span>
+        <span>
+          Trust: <span className="badge badge-active">
+            {trustLevel} ({trustLabels[trustLevel] ?? "?"})
+          </span>
         </span>
       </div>
 
