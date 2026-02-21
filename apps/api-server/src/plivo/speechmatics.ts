@@ -55,8 +55,6 @@ export class SpeechmaticsClient {
               language: "en",
               enable_partials: true,
               max_delay: 2.0,
-              // EndOfUtterance silence trigger — critical per CLAUDE.md
-              end_of_utterance_silence_trigger: 0.5,
             },
             audio_format: {
               type: "raw",

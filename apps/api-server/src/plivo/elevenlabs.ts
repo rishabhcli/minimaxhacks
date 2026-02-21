@@ -20,6 +20,8 @@ export async function streamTts(
     return;
   }
 
+  log.info({ textLength: text.length, voiceId }, "Starting TTS synthesis");
+
   const url = `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream?output_format=ulaw_8000`;
 
   const response = await fetch(url, {
@@ -53,11 +55,15 @@ export async function streamTts(
 
   // Stream audio chunks — each chunk is raw mulaw 8kHz bytes
   const reader = response.body.getReader();
+  let chunkCount = 0;
+  let totalBytes = 0;
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
       if (value && value.length > 0) {
+        chunkCount++;
+        totalBytes += value.length;
         // Convert to base64 for Plivo playAudio
         const base64 = Buffer.from(value).toString("base64");
         onChunk(base64);
@@ -65,6 +71,7 @@ export async function streamTts(
     }
   } finally {
     reader.releaseLock();
+    log.info({ chunkCount, totalBytes }, "TTS stream complete");
   }
 }
 

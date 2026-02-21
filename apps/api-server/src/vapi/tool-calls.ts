@@ -31,6 +31,16 @@ const VapiToolCallWebhookSchema = z.object({
 // ── POST /vapi/tool-calls ──
 
 router.post("/tool-calls", async (req, res) => {
+  // VAPI sends ALL webhook events to serverUrl, not just tool-calls.
+  // Gracefully ignore non-tool-call events (status-update, speech-update,
+  // conversation-update, assistant.started, hang, end-of-call-report, etc.)
+  const messageType = req.body?.message?.type;
+  if (messageType && messageType !== "tool-calls") {
+    log.debug({ type: messageType }, "Ignoring non-tool-call VAPI event");
+    res.status(200).json({ ok: true });
+    return;
+  }
+
   const parseResult = VapiToolCallWebhookSchema.safeParse(req.body);
   if (!parseResult.success) {
     log.warn({ errors: parseResult.error.issues }, "Invalid tool-calls payload");

@@ -120,7 +120,13 @@ async function handlePlivoMessage(
       sessions.set(streamId, newSession);
       setSession(newSession);
 
-      // Initialize Speechmatics STT connection
+      // Play greeting FIRST — caller should hear something immediately
+      // Do this before Speechmatics so there's no dead air
+      speakToPlivo(newSession, "Hi, welcome to ShieldDesk support! How can I help you today?").catch(
+        (err) => log.error({ err, callUuid }, "Failed to play greeting")
+      );
+
+      // Initialize Speechmatics STT connection in parallel with greeting
       try {
         const sttClient = new SpeechmaticsClient(callUuid, {
           onPartialTranscript: (text) => {
@@ -165,6 +171,7 @@ async function handlePlivoMessage(
 
         await sttClient.connect();
         newSession.speechmatics = sttClient;
+        log.info({ callUuid }, "Speechmatics connected successfully");
       } catch (err) {
         log.error({ err, callUuid }, "Failed to connect to Speechmatics");
       }
@@ -320,14 +327,18 @@ async function speakToPlivo(
   session: CallSession,
   text: string
 ): Promise<void> {
+  const { callUuid } = session;
+  log.info({ callUuid, textLength: text.length, text: text.substring(0, 80) }, "Speaking to Plivo caller");
   session.isPlayingAudio = true;
 
+  let chunksSent = 0;
   try {
     await streamTts(text, (audioBase64) => {
       if (
         session.plivoWs.readyState === WebSocket.OPEN &&
         session.isPlayingAudio
       ) {
+        chunksSent++;
         // Send audio chunk to Plivo
         // Plivo expects: { event: "playAudio", media: { payload: base64, contentType, sampleRate } }
         session.plivoWs.send(
@@ -342,9 +353,10 @@ async function speakToPlivo(
         );
       }
     });
+    log.info({ callUuid, chunksSent }, "Finished speaking to Plivo caller");
   } catch (err) {
     log.error(
-      { err, callUuid: session.callUuid },
+      { err, callUuid },
       "ElevenLabs TTS failed, no fallback on phone channel"
     );
   } finally {
