@@ -3,7 +3,7 @@ export const TOOL_FUNCTION_DEFINITIONS = [
   {
     type: "function" as const,
     function: {
-      name: "faq.search",
+      name: "faq_search",
       description: "Search the knowledge base for FAQ answers",
       parameters: {
         type: "object",
@@ -17,7 +17,7 @@ export const TOOL_FUNCTION_DEFINITIONS = [
   {
     type: "function" as const,
     function: {
-      name: "order.lookup",
+      name: "order_lookup",
       description: "Look up order details by order number",
       parameters: {
         type: "object",
@@ -32,7 +32,7 @@ export const TOOL_FUNCTION_DEFINITIONS = [
   {
     type: "function" as const,
     function: {
-      name: "account.lookup",
+      name: "account_lookup",
       description: "Look up customer account details",
       parameters: {
         type: "object",
@@ -46,7 +46,7 @@ export const TOOL_FUNCTION_DEFINITIONS = [
   {
     type: "function" as const,
     function: {
-      name: "ticket.create",
+      name: "ticket_create",
       description: "Create a support ticket",
       parameters: {
         type: "object",
@@ -66,7 +66,7 @@ export const TOOL_FUNCTION_DEFINITIONS = [
   {
     type: "function" as const,
     function: {
-      name: "ticket.escalate",
+      name: "ticket_escalate",
       description: "Escalate a ticket to a human agent",
       parameters: {
         type: "object",
@@ -82,7 +82,7 @@ export const TOOL_FUNCTION_DEFINITIONS = [
   {
     type: "function" as const,
     function: {
-      name: "account.update",
+      name: "account_update",
       description: "Update customer account fields",
       parameters: {
         type: "object",
@@ -99,7 +99,7 @@ export const TOOL_FUNCTION_DEFINITIONS = [
   {
     type: "function" as const,
     function: {
-      name: "order.refund",
+      name: "order_refund",
       description: "Process a refund for an order",
       parameters: {
         type: "object",
@@ -113,3 +113,11 @@ export const TOOL_FUNCTION_DEFINITIONS = [
     },
   },
 ];
+
+/**
+ * Convert underscore tool names (VAPI/MiniMax) to dot notation (MCP/governance).
+ * e.g. "faq_search" → "faq.search", "order_lookup" → "order.lookup"
+ */
+export function toMcpToolName(vapiName: string): string {
+  return vapiName.replace("_", ".");
+}

@@ -1,8 +1,13 @@
 import { Router } from "express";
 import { z } from "zod";
 import pino from "pino";
+import { ConvexHttpClient } from "convex/browser";
+import { anyApi } from "convex/server";
 import { config } from "../config.js";
 import { TOOL_FUNCTION_DEFINITIONS } from "./tool-definitions.js";
+
+const convex = new ConvexHttpClient(config.CONVEX_URL);
+const api = anyApi;
 
 const log = pino({ name: "vapi-chat-completions" });
 
@@ -52,13 +57,13 @@ IMPORTANT RULES:
 - Keep responses concise and conversational (this is a voice call)
 
 AVAILABLE TOOLS:
-- faq.search: Search knowledge base for answers
-- order.lookup: Look up order details by order number
-- account.lookup: Look up customer account
-- ticket.create: Create a support ticket
-- ticket.escalate: Escalate a ticket to a human
-- account.update: Update customer account fields
-- order.refund: Process a refund for an order`;
+- faq_search: Search knowledge base for answers
+- order_lookup: Look up order details by order number
+- account_lookup: Look up customer account
+- ticket_create: Create a support ticket
+- ticket_escalate: Escalate a ticket to a human
+- account_update: Update customer account fields
+- order_refund: Process a refund for an order`;
 
 // ── POST /vapi/chat/completions ──
 
@@ -87,18 +92,22 @@ router.post("/chat/completions", async (req, res) => {
     "Chat completion request from VAPI"
   );
 
-  // Build messages with our system prompt injected
-  const systemMessage = { role: "system" as const, content: SYSTEM_PROMPT };
-
   // Filter out any existing system messages from VAPI, inject ours
   const userMessages = messages.filter((m) => m.role !== "system");
+
+  // RAG context injection is handled by the faq.search tool via tool-calls webhook.
+  // Doing it here adds 3-5s latency (embedding + vector search) which causes VAPI timeouts.
+  // The agent will use faq.search when it needs knowledge base info.
+  const systemMessage = {
+    role: "system" as const,
+    content: SYSTEM_PROMPT,
+  };
   const fullMessages = [systemMessage, ...userMessages];
 
-  // TODO (Layer 3): Query Convex RAG for relevant knowledge based on latest user message
-  // and append context to the system prompt
+  const wantsStream = parseResult.data.stream === true;
 
   try {
-    // Proxy to MiniMax M2.5 (OpenAI-compatible endpoint)
+    // Stream from MiniMax and pipe to VAPI in real-time to avoid timeout
     const minimaxResponse = await fetch(
       `${config.MINIMAX_BASE_URL}/chat/completions`,
       {
@@ -113,6 +122,7 @@ router.post("/chat/completions", async (req, res) => {
           tools: TOOL_FUNCTION_DEFINITIONS,
           temperature: temperature ?? 0.7,
           max_tokens: max_tokens ?? 1024,
+          stream: true,
         }),
       }
     );
@@ -123,66 +133,138 @@ router.post("/chat/completions", async (req, res) => {
         { status: minimaxResponse.status, body: errorText },
         "MiniMax API error"
       );
-
-      // Fallback: return a safe response instead of crashing
-      res.json({
-        id: `chatcmpl-fallback-${Date.now()}`,
-        object: "chat.completion",
-        created: Math.floor(Date.now() / 1000),
-        model: config.MINIMAX_MODEL,
-        choices: [
-          {
-            index: 0,
-            message: {
-              role: "assistant",
-              content:
-                "I'm sorry, I'm having trouble processing that right now. Could you please repeat what you said?",
-            },
-            finish_reason: "stop",
-          },
-        ],
-        usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
-      });
-      return;
+      return sendFallback(res, wantsStream, config.MINIMAX_MODEL,
+        "I'm sorry, I'm having trouble processing that right now. Could you please repeat what you said?");
     }
 
-    // Validate and forward MiniMax response
-    const responseData = await minimaxResponse.json();
+    const body = minimaxResponse.body;
+    if (!body) throw new Error("No response body from MiniMax");
 
-    log.info(
-      {
-        model: responseData.model,
-        finishReason: responseData.choices?.[0]?.finish_reason,
-        hasToolCalls: !!responseData.choices?.[0]?.message?.tool_calls,
-      },
-      "MiniMax response"
-    );
+    // Set SSE headers immediately so VAPI knows we're alive
+    if (wantsStream) {
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("Connection", "keep-alive");
+    }
 
-    // Return OpenAI-format response directly to VAPI
-    res.json(responseData);
+    const reader = body.getReader();
+    const decoder = new TextDecoder();
+    let sseBuffer = "";
+    let insideThink = false;
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        sseBuffer += decoder.decode(value, { stream: true });
+
+        // Process complete lines
+        const lines = sseBuffer.split("\n");
+        sseBuffer = lines.pop() ?? "";
+
+        for (const line of lines) {
+          if (line.startsWith("data: [DONE]")) {
+            if (wantsStream) res.write("data: [DONE]\n\n");
+            continue;
+          }
+          if (!line.startsWith("data: ")) continue;
+
+          try {
+            const parsed = JSON.parse(line.slice(6));
+            const choice = parsed.choices?.[0];
+            if (!choice?.delta) {
+              if (wantsStream) res.write(`data: ${JSON.stringify(parsed)}\n\n`);
+              continue;
+            }
+
+            // Strip <think>...</think> from content in real-time
+            if (typeof choice.delta.content === "string") {
+              let c = choice.delta.content;
+              if (c.includes("<think>")) {
+                insideThink = true;
+                c = c.replace(/<think>[\s\S]*/g, "");
+              }
+              if (insideThink && c.includes("</think>")) {
+                insideThink = false;
+                c = c.replace(/[\s\S]*<\/think>\s*/g, "");
+              }
+              if (insideThink) c = "";
+              choice.delta.content = c;
+            }
+
+            // Always forward tool_calls and finish_reason
+            const hasUseful = choice.delta.content || choice.delta.tool_calls || choice.finish_reason;
+            if (!hasUseful) continue;
+
+            if (wantsStream) {
+              res.write(`data: ${JSON.stringify(parsed)}\n\n`);
+            }
+          } catch { /* skip bad lines */ }
+        }
+      }
+
+      // Flush remaining buffer
+      if (sseBuffer.trim()) {
+        if (sseBuffer.startsWith("data: [DONE]")) {
+          if (wantsStream) res.write("data: [DONE]\n\n");
+        } else if (sseBuffer.startsWith("data: ")) {
+          try {
+            const parsed = JSON.parse(sseBuffer.slice(6));
+            if (wantsStream) res.write(`data: ${JSON.stringify(parsed)}\n\n`);
+          } catch { /* skip */ }
+        }
+      }
+
+      if (wantsStream) {
+        res.write("data: [DONE]\n\n");
+        res.end();
+      }
+    } catch (streamErr) {
+      log.error({ err: streamErr }, "Stream error");
+      if (wantsStream && !res.writableEnded) res.end();
+    }
+
+    log.info("Streamed MiniMax→VAPI (real-time, thinking stripped)");
   } catch (err) {
     log.error({ err }, "Failed to proxy to MiniMax");
+    sendFallback(res, wantsStream, config.MINIMAX_MODEL,
+      "I didn't catch that, could you repeat? I'm having a brief technical issue.");
+  }
+});
 
-    // Graceful fallback per CLAUDE.md: if MiniMax fails, ask customer to repeat
+/** Send a graceful fallback response in either SSE or JSON format */
+function sendFallback(
+  res: import("express").Response,
+  stream: boolean,
+  model: string,
+  message: string
+) {
+  if (stream) {
+    if (!res.headersSent) {
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("Connection", "keep-alive");
+    }
+    const chunk = {
+      id: `chatcmpl-fallback-${Date.now()}`,
+      object: "chat.completion.chunk",
+      created: Math.floor(Date.now() / 1000),
+      model,
+      choices: [{ index: 0, delta: { role: "assistant", content: message }, finish_reason: "stop" }],
+    };
+    res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+    res.write("data: [DONE]\n\n");
+    res.end();
+  } else {
     res.json({
-      id: `chatcmpl-error-${Date.now()}`,
+      id: `chatcmpl-fallback-${Date.now()}`,
       object: "chat.completion",
       created: Math.floor(Date.now() / 1000),
-      model: config.MINIMAX_MODEL,
-      choices: [
-        {
-          index: 0,
-          message: {
-            role: "assistant",
-            content:
-              "I didn't catch that, could you repeat? I'm having a brief technical issue.",
-          },
-          finish_reason: "stop",
-        },
-      ],
+      model,
+      choices: [{ index: 0, message: { role: "assistant", content: message }, finish_reason: "stop" }],
       usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
     });
   }
-});
+}
 
 export { router as chatCompletionsRouter };

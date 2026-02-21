@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import pino from "pino";
 import { executeWithGovernance } from "../policy/executor.js";
+import { toMcpToolName } from "./tool-definitions.js";
 import type { Sentiment, TrustLevel } from "@shielddesk/shared";
 
 const log = pino({ name: "vapi-tool-calls" });
@@ -29,15 +30,16 @@ const VapiToolCallWebhookSchema = z.object({
 });
 
 // ── POST /vapi/tool-calls ──
+// VAPI sends ALL webhook events to serverUrl (status-update, speech-update,
+// conversation-update, hang, end-of-call-report, etc). We must return 200
+// for non-tool-calls events or VAPI treats it as a fatal error and drops the call.
 
 router.post("/tool-calls", async (req, res) => {
-  // VAPI sends ALL webhook events to serverUrl, not just tool-calls.
-  // Gracefully ignore non-tool-call events (status-update, speech-update,
-  // conversation-update, assistant.started, hang, end-of-call-report, etc.)
+  // Check if this is actually a tool-calls event
   const messageType = req.body?.message?.type;
   if (messageType && messageType !== "tool-calls") {
-    log.debug({ type: messageType }, "Ignoring non-tool-call VAPI event");
-    res.status(200).json({ ok: true });
+    log.debug({ type: messageType }, "Non-tool-call VAPI event, acknowledging");
+    res.status(200).json({});
     return;
   }
 
@@ -86,7 +88,8 @@ router.post("/tool-calls", async (req, res) => {
   // Process each tool call through governance
   const results = await Promise.all(
     toolCallList.map(async (toolCall) => {
-      const toolName = toolCall.function.name;
+      // VAPI/MiniMax use underscore names (faq_search); MCP/governance use dots (faq.search)
+      const toolName = toMcpToolName(toolCall.function.name);
 
       // Parse arguments — VAPI may send as string or object
       let toolArgs: Record<string, unknown>;

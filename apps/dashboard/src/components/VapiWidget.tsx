@@ -64,7 +64,10 @@ export function VapiWidget() {
 
       vapi.on("error", (err: unknown) => {
         console.error("VAPI error:", err);
-        setTranscript((prev) => [...prev, `[Error: ${String(err)}]`]);
+        const errMsg = err && typeof err === "object"
+          ? JSON.stringify(err, null, 2)
+          : String(err);
+        setTranscript((prev) => [...prev, `[Error: ${errMsg}]`]);
         setStatus("idle");
       });
 

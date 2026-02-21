@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { convex } from "../convex-client.js";
 import { anyApi } from "convex/server";
+import { config } from "../config.js";
 
 // Use anyApi for Convex calls — avoids dependency on codegen.
 // Type safety is enforced by Zod at the tool boundary.
@@ -92,18 +93,91 @@ async function handleFaqSearch(
   raw: Record<string, unknown>
 ): Promise<ToolResult> {
   const input = FaqSearchInput.parse(raw);
-  // Vector search requires embeddings — stub until RAG pipeline (Layer 3).
-  return textResult(
-    JSON.stringify({
-      results: [
-        {
-          title: "FAQ Search",
-          snippet: `Search results for: "${input.query}" — RAG pipeline not yet wired.`,
-          sourceUrl: "https://help.shielddesk.ai",
+
+  try {
+    // Get embedding from MiniMax embo-01
+    const embeddingRes = await fetch(
+      `${config.MINIMAX_BASE_URL}/embeddings`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.MINIMAX_API_KEY}`,
         },
-      ],
-    })
-  );
+        body: JSON.stringify({
+          model: "embo-01",
+          input: [input.query],
+          type: "query",
+        }),
+      }
+    );
+
+    if (!embeddingRes.ok) {
+      throw new Error(`Embedding API returned ${embeddingRes.status}`);
+    }
+
+    const embData = await embeddingRes.json();
+    const embedding: number[] = embData?.data?.[0]?.embedding;
+
+    if (!embedding || embedding.length !== 1536) {
+      throw new Error("Invalid embedding response");
+    }
+
+    // Vector search in Convex
+    const results = await convex.action(api.knowledgeDocuments.vectorSearch, {
+      embedding,
+      limit: 5,
+    });
+
+    if (results && results.length > 0) {
+      return textResult(
+        JSON.stringify({
+          results: results.map(
+            (doc: { title: string; content: string; sourceUrl: string; _score: number }) => ({
+              title: doc.title,
+              snippet: doc.content.slice(0, 500),
+              sourceUrl: doc.sourceUrl,
+              relevance: doc._score,
+            })
+          ),
+        })
+      );
+    }
+
+    // Fall back to text search if no vector results
+    const textResults = await convex.query(api.knowledgeDocuments.search, {
+      query: input.query,
+    });
+
+    return textResult(
+      JSON.stringify({
+        results: (textResults ?? []).map(
+          (doc: { title: string; content: string; sourceUrl: string }) => ({
+            title: doc.title,
+            snippet: doc.content.slice(0, 500),
+            sourceUrl: doc.sourceUrl,
+          })
+        ),
+      })
+    );
+  } catch (err) {
+    // Fall back to text search on any error
+    const textResults = await convex.query(api.knowledgeDocuments.search, {
+      query: input.query,
+    });
+
+    return textResult(
+      JSON.stringify({
+        results: (textResults ?? []).map(
+          (doc: { title: string; content: string; sourceUrl: string }) => ({
+            title: doc.title,
+            snippet: doc.content.slice(0, 500),
+            sourceUrl: doc.sourceUrl,
+          })
+        ),
+      })
+    );
+  }
 }
 
 async function handleOrderLookup(

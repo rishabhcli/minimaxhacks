@@ -2,6 +2,12 @@ import pino from "pino";
 import { config } from "../config.js";
 import { evaluatePolicy } from "./decision.js";
 import { getRiskScore } from "./risk-scores.js";
+import {
+  isArmorIqEnabled,
+  capturePlan,
+  getIntentToken,
+  invoke as armoriqInvoke,
+} from "./armoriq-client.js";
 import type { Sentiment, TrustLevel } from "@shielddesk/shared";
 
 const log = pino({ name: "policy-executor" });
@@ -83,28 +89,81 @@ export async function executeWithGovernance(
     };
   }
 
-  // Step 4: ALLOW — execute via ArmorIQ → MCP
-  try {
-    // ArmorIQ flow: capturePlan → getIntentToken → invoke
-    // When ArmorIQ SDK is available, this will be:
-    //   const planCapture = await armoriq.capturePlan(llm, prompt, plan, metadata)
-    //   const token = await armoriq.getIntentToken(planCapture, policy, 300)
-    //   const result = await armoriq.invoke(mcp, action, token, params)
-    //
-    // For now, execute directly against MCP server
-    const mcpResult = await callMcpServer(input.toolName, input.toolArgs);
+  // Step 4: ALLOW — try ArmorIQ, fall back to direct MCP on any failure
+  let armoriqTokenId: string | undefined;
+  let armoriqPlanHash: string | undefined;
+  let armoriqVerified = false;
 
+  if (isArmorIqEnabled()) {
+    try {
+      const plan = JSON.stringify({
+        tool: input.toolName,
+        args: input.toolArgs,
+        decision: policyDecision.decision,
+      });
+      const prompt = `Execute ${input.toolName} for conversation ${input.conversationId ?? "unknown"}`;
+
+      const planCapture = await capturePlan(
+        config.MINIMAX_MODEL,
+        prompt,
+        plan,
+        {
+          conversationId: input.conversationId,
+          customerId: input.customerId,
+          riskScore,
+          confidence: input.confidence,
+          sentiment: input.sentiment,
+          trustLevel: input.trustLevel,
+        }
+      );
+
+      const token = await getIntentToken(planCapture, "shielddesk-support", 300);
+
+      const armorResult = await armoriqInvoke(
+        config.MCP_SERVER_URL,
+        input.toolName,
+        token,
+        input.toolArgs
+      );
+
+      log.info(
+        { toolName: input.toolName, tokenId: armorResult.tokenId, verified: armorResult.verified },
+        "ArmorIQ execution complete"
+      );
+
+      return {
+        ...base,
+        decision: "allow",
+        reason: policyDecision.reason,
+        toolResult: armorResult.result,
+        armoriqTokenId: armorResult.tokenId,
+        armoriqPlanHash: armorResult.planHash,
+        armoriqVerified: armorResult.verified,
+      };
+    } catch (armorErr) {
+      // ArmorIQ failed — fall back to direct MCP execution
+      // Policy engine already approved; crypto signing is skipped.
+      log.warn(
+        { err: armorErr, toolName: input.toolName },
+        "ArmorIQ failed, falling back to direct MCP execution"
+      );
+    }
+  } else {
+    log.info({ toolName: input.toolName }, "ArmorIQ not configured, using direct MCP");
+  }
+
+  // Execute directly via MCP (ArmorIQ not configured or failed gracefully)
+  try {
+    const mcpResult = await callMcpServer(input.toolName, input.toolArgs);
     return {
       ...base,
       decision: "allow",
       reason: policyDecision.reason,
       toolResult: mcpResult,
-      // ArmorIQ fields will be populated when SDK is wired in Layer 2.3
       armoriqVerified: false,
     };
   } catch (err) {
-    // Fail closed: if execution fails, report failure
-    log.error({ err, toolName: input.toolName }, "Tool execution failed");
+    log.error({ err, toolName: input.toolName }, "MCP tool execution failed");
     return {
       ...base,
       decision: "deny",
