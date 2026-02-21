@@ -13,6 +13,44 @@ export const getByNumber = query({
   },
 });
 
+export const create = mutation({
+  args: {
+    orderNumber: v.string(),
+    customerId: v.string(),
+    status: v.string(),
+    items: v.array(v.object({
+      productName: v.string(),
+      quantity: v.number(),
+      unitPrice: v.number(),
+    })),
+    totalAmount: v.number(),
+    createdAt: v.number(),
+  },
+  handler: async (ctx, args) => {
+    // Map seed data format to schema format
+    const items = args.items.map((i) => ({
+      name: i.productName,
+      quantity: i.quantity,
+      priceUsd: i.unitPrice,
+    }));
+
+    // Find customer by metadata.externalId
+    const customers = await ctx.db.query("customers").collect();
+    const customer = customers.find(
+      (c) => (c.metadata as { externalId?: string })?.externalId === args.customerId
+    );
+
+    return await ctx.db.insert("orders", {
+      orderNumber: args.orderNumber,
+      customerId: customer?._id ?? ("" as any),
+      status: args.status as "processing" | "shipped" | "delivered" | "cancelled" | "refunded",
+      items,
+      totalUsd: args.totalAmount,
+      placedAt: args.createdAt,
+    });
+  },
+});
+
 export const refund = mutation({
   args: {
     id: v.id("orders"),

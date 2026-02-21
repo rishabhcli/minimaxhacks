@@ -5,8 +5,15 @@
  * Run after Convex dev server is up.
  *
  * Usage:
- *   CONVEX_URL=... npx tsx scripts/seed-data.ts
+ *   npx tsx scripts/seed-data.ts
  */
+
+import dotenv from "dotenv";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dotenvDir = dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: resolve(__dotenvDir, "../.env") });
 
 import { ConvexHttpClient } from "convex/browser";
 import { anyApi } from "convex/server";
@@ -38,7 +45,7 @@ const CUSTOMERS = [
     name: "Alice Johnson",
     email: "alice@example.com",
     phone: "+15551000002",
-    tier: "basic" as const,
+    tier: "pro" as const,
     trustLevel: 2,
   },
   {
@@ -46,7 +53,7 @@ const CUSTOMERS = [
     name: "Bob Smith",
     email: "bob@premium.com",
     phone: "+15551000003",
-    tier: "premium" as const,
+    tier: "pro" as const,
     trustLevel: 3,
   },
   {
@@ -104,7 +111,7 @@ const ORDERS = [
   {
     orderNumber: "ORD-1111",
     customerId: "cust_vip_01",
-    status: "pending" as const,
+    status: "processing" as const,
     items: [
       { productName: "Standing Desk", quantity: 1, unitPrice: 599.00 },
       { productName: "Desk Mat XL", quantity: 1, unitPrice: 29.99 },
@@ -160,8 +167,8 @@ async function seedCustomers(): Promise<void> {
     try {
       await convex.mutation(api.customers.create, customer);
       console.log(`  Created: ${customer.name} (${customer.externalId})`);
-    } catch (err) {
-      console.log(`  Skipped: ${customer.name} (may already exist)`);
+    } catch (err: any) {
+      console.log(`  Skipped: ${customer.name} — ${err.message ?? err}`);
     }
   }
 }
@@ -172,8 +179,8 @@ async function seedOrders(): Promise<void> {
     try {
       await convex.mutation(api.orders.create, order);
       console.log(`  Created: ${order.orderNumber} ($${order.totalAmount})`);
-    } catch (err) {
-      console.log(`  Skipped: ${order.orderNumber} (may already exist)`);
+    } catch (err: any) {
+      console.log(`  Skipped: ${order.orderNumber} — ${err.message ?? err}`);
     }
   }
 }
@@ -184,8 +191,8 @@ async function seedKnowledge(): Promise<void> {
     try {
       await convex.mutation(api.knowledgeDocuments.insert, doc);
       console.log(`  Created: ${doc.title}`);
-    } catch (err) {
-      console.log(`  Skipped: ${doc.title} (may already exist)`);
+    } catch (err: any) {
+      console.log(`  Skipped: ${doc.title} — ${err.message ?? err}`);
     }
   }
 }

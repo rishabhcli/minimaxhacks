@@ -5,10 +5,17 @@
  * into the Convex knowledgeDocuments table for RAG retrieval.
  *
  * Usage:
- *   RTRVR_API_KEY=... CONVEX_URL=... npx tsx scripts/scrape-knowledge.ts
+ *   npx tsx scripts/scrape-knowledge.ts
  *
  * rtrvr.ai API docs: https://docs.rtrvr.ai
  */
+
+import dotenv from "dotenv";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dotenvDir = dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: resolve(__dotenvDir, "../.env") });
 
 import { ConvexHttpClient } from "convex/browser";
 import { anyApi } from "convex/server";

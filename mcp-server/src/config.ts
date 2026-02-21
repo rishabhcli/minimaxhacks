@@ -1,4 +1,11 @@
+import dotenv from "dotenv";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { z } from "zod";
+
+// Load root .env file
+const __dirname = dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: resolve(__dirname, "../../.env") });
 
 const EnvSchema = z.object({
   MCP_PORT: z.coerce.number().default(3001),

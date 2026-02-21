@@ -28,6 +28,27 @@ export const getByEmail = query({
   },
 });
 
+export const create = mutation({
+  args: {
+    externalId: v.string(),
+    name: v.string(),
+    email: v.string(),
+    phone: v.string(),
+    tier: v.string(),
+    trustLevel: v.number(),
+  },
+  handler: async (ctx, args) => {
+    return await ctx.db.insert("customers", {
+      email: args.email,
+      phoneE164: args.phone,
+      displayName: args.name,
+      trustLevel: args.trustLevel as 1 | 2 | 3 | 4,
+      tier: args.tier as "free" | "pro" | "enterprise",
+      metadata: { externalId: args.externalId },
+    });
+  },
+});
+
 export const update = mutation({
   args: {
     id: v.id("customers"),
