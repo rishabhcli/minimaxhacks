@@ -24,6 +24,50 @@ interface CallSession {
   conversationId?: string;
 }
 
+interface MiniMaxToolCall {
+  id?: string;
+  function?: {
+    name?: string;
+    arguments?: unknown;
+  };
+}
+
+interface ToolExecutionOutcome {
+  toolName: string;
+  decision: "allow" | "deny" | "escalate";
+  reason: string;
+  result?: unknown;
+}
+
+const PHONE_SYSTEM_PROMPT = `You are ShieldDesk, an AI customer support agent on a live phone call.
+
+Rules:
+- Be concise and conversational.
+- Keep spoken replies short (one sentence unless the customer asks for detail).
+- You already greeted the caller at call start. Do not re-introduce yourself.
+- For any request needing data lookup or account/order action, call the appropriate tool.
+- Never fabricate customer, order, ticket, or policy details.
+
+Return/Refund handling:
+- When a customer mentions returns or refunds, use faq_search for "return policy" first.
+- Use account_lookup then order_list to find their orders if they don't have an order number.
+- General returns: 30 days. Electronics: 15 days. Refunds: 5-7 business days.
+
+Available tools:
+- faq_search (use proactively for policy questions)
+- order_lookup
+- order_list (list orders by customer ID when order number unknown)
+- account_lookup
+- ticket_create
+- ticket_escalate
+- account_update
+- order_refund`;
+
+const PHONE_LLM_TEMPERATURE = 0.2;
+const PHONE_LLM_MAX_TOKENS = 128;
+const PHONE_LLM_TIMEOUT_MS = 3500;
+const MAX_HISTORY_TURNS = 8;
+
 /** Map of active sessions by streamId */
 const sessions = new Map<string, CallSession>();
 

@@ -6,34 +6,15 @@ import { api } from "@/lib/api";
 
 type CallStatus = "idle" | "connecting" | "active" | "ended";
 
-function formatVapiError(err: unknown): string {
-  if (err instanceof Error) {
-    return err.message;
-  }
-  if (typeof err === "string") {
-    return err;
-  }
-  if (err && typeof err === "object") {
-    const seen = new WeakSet<object>();
-    try {
-      return JSON.stringify(
-        err,
-        (_key, value) => {
-          if (value && typeof value === "object") {
-            if (seen.has(value)) {
-              return "[Circular]";
-            }
-            seen.add(value);
-          }
-          return value;
-        },
-        2
-      );
-    } catch {
-      return "[unserializable error object]";
-    }
-  }
-  return String(err);
+interface TranscriptEntry {
+  id: string;
+  role: "user" | "agent" | "system";
+  text: string;
+}
+
+let entryCounter = 0;
+function nextId(): string {
+  return `entry-${++entryCounter}-${Date.now()}`;
 }
 
 /**
@@ -46,7 +27,8 @@ function formatVapiError(err: unknown): string {
  */
 export function VapiWidget() {
   const [status, setStatus] = useState<CallStatus>("idle");
-  const [transcript, setTranscript] = useState<string[]>([]);
+  const [entries, setEntries] = useState<TranscriptEntry[]>([]);
+  const [currentPartial, setCurrentPartial] = useState<string | null>(null);
   const vapiRef = useRef<unknown>(null);
   const callIdRef = useRef<string | null>(null);
   const conversationIdRef = useRef<string | null>(null);
@@ -55,19 +37,19 @@ export function VapiWidget() {
   const finalizeConversation = useMutation(api.conversations.finalizeBySession);
   const addTranscript = useMutation(api.transcripts.add);
 
+  const addEntry = useCallback((role: TranscriptEntry["role"], text: string) => {
+    setEntries((prev) => [...prev, { id: nextId(), role, text }]);
+  }, []);
+
   const ensureMicReady = useCallback(async (): Promise<boolean> => {
     if (typeof window === "undefined") return false;
     if (!window.isSecureContext) {
-      setTranscript([
-        "Microphone access requires a secure context. Open this on https:// or localhost.",
-      ]);
+      addEntry("system", "Microphone access requires a secure context. Open this on https:// or localhost.");
       return false;
     }
 
     if (!navigator.mediaDevices?.getUserMedia) {
-      setTranscript([
-        "This browser does not support microphone capture via getUserMedia.",
-      ]);
+      addEntry("system", "This browser does not support microphone capture via getUserMedia.");
       return false;
     }
 
@@ -79,19 +61,17 @@ export function VapiWidget() {
       return true;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      setTranscript([
-        `Microphone permission is required to start a call. Browser error: ${message}`,
-      ]);
+      addEntry("system", `Microphone permission is required to start a call. Browser error: ${message}`);
       return false;
     }
-  }, []);
+  }, [addEntry]);
 
   useEffect(() => {
     transcriptRef.current?.scrollTo({
       top: transcriptRef.current.scrollHeight,
       behavior: "smooth",
     });
-  }, [transcript]);
+  }, [entries, currentPartial]);
 
   useEffect(() => {
     return () => {
@@ -131,7 +111,8 @@ export function VapiWidget() {
   const startCall = useCallback(async () => {
     try {
       setStatus("connecting");
-      setTranscript([]);
+      setEntries([]);
+      setCurrentPartial(null);
       callIdRef.current = null;
 
       const micReady = await ensureMicReady();
@@ -155,7 +136,7 @@ export function VapiWidget() {
       const assistantId = process.env.NEXT_PUBLIC_VAPI_ASSISTANT_ID;
 
       if (!publicKey || !assistantId) {
-        setTranscript(["Error: VAPI keys not configured. Set NEXT_PUBLIC_VAPI_PUBLIC_KEY and NEXT_PUBLIC_VAPI_ASSISTANT_ID."]);
+        addEntry("system", "Error: VAPI keys not configured. Set NEXT_PUBLIC_VAPI_PUBLIC_KEY and NEXT_PUBLIC_VAPI_ASSISTANT_ID.");
         setStatus("idle");
         return;
       }
@@ -165,19 +146,22 @@ export function VapiWidget() {
 
       vapi.on("call-start", () => {
         setStatus("active");
-        setTranscript((prev) => [...prev, "[Call started]"]);
+        addEntry("system", "Call started");
       });
 
       vapi.on("call-start-success", async (event: { callId?: string }) => {
         if (typeof event?.callId === "string" && event.callId.length > 0) {
-          callIdRef.current = event.callId;
-          await ensureConversationRecord(event.callId);
+          const callId = event.callId;
+          callIdRef.current = callId;
+          addEntry("system", `Session ${callId.slice(0, 12)}…`);
+          await ensureConversationRecord(callId);
         }
       });
 
       vapi.on("call-end", async () => {
         setStatus("ended");
-        setTranscript((prev) => [...prev, "[Call ended]"]);
+        setCurrentPartial(null);
+        addEntry("system", "Call ended");
         if (callIdRef.current) {
           try {
             await finalizeConversation({
@@ -194,7 +178,7 @@ export function VapiWidget() {
       });
 
       vapi.on("speech-start", () => {
-        setTranscript((prev) => [...prev, "[Agent speaking...]"]);
+        // Agent started speaking — no noise in transcript
       });
 
       vapi.on("speech-end", () => {
@@ -203,27 +187,39 @@ export function VapiWidget() {
 
       vapi.on("message", async (msg: Record<string, unknown>) => {
         if (msg.type === "transcript" && typeof msg.transcript === "string") {
-          const role = msg.role === "user" ? "You" : "Agent";
-          setTranscript((prev) => [...prev, `${role}: ${msg.transcript}`]);
-          const convId =
-            conversationIdRef.current ||
-            (await ensureConversationRecord(callIdRef.current));
-          if (convId) {
-            addTranscript({
-              conversationId: convId as any,
-              speaker: role === "You" ? "customer" : "agent",
-              isFinal: true,
-              text: msg.transcript,
-            }).catch(() => undefined);
+          const role: "user" | "agent" = msg.role === "user" ? "user" : "agent";
+          const transcriptType = msg.transcriptType as string | undefined;
+
+          if (transcriptType === "final") {
+            setCurrentPartial(null);
+            addEntry(role, msg.transcript);
+            const convId =
+              conversationIdRef.current ||
+              (await ensureConversationRecord(callIdRef.current));
+            if (convId) {
+              addTranscript({
+                conversationId: convId as any,
+                speaker: role === "user" ? "customer" : "agent",
+                isFinal: true,
+                text: msg.transcript,
+              }).catch(() => undefined);
+            }
+          } else {
+            // Partial — show as ephemeral indicator
+            const label = role === "user" ? "You" : "Agent";
+            setCurrentPartial(`${label}: ${msg.transcript}`);
           }
         }
       });
 
       vapi.on("error", (err: unknown) => {
         console.error("VAPI error:", err);
-        const errMsg = formatVapiError(err);
-        setTranscript((prev) => [...prev, `[Error: ${errMsg}]`]);
+        const errMsg = err && typeof err === "object"
+          ? JSON.stringify(err, null, 2)
+          : String(err);
+        addEntry("system", `Error: ${errMsg}`);
         setStatus("idle");
+        setCurrentPartial(null);
         vapiRef.current = null;
       });
 
@@ -243,14 +239,12 @@ export function VapiWidget() {
       }
     } catch (err) {
       console.error("Failed to start VAPI call:", err);
-      setTranscript((prev) => [
-        ...prev,
-        `[Failed to start: ${err instanceof Error ? err.message : String(err)}]`,
-      ]);
+      addEntry("system", `Failed to start: ${err instanceof Error ? err.message : String(err)}`);
       setStatus("idle");
+      setCurrentPartial(null);
       vapiRef.current = null;
     }
-  }, [ensureMicReady]);
+  }, [ensureMicReady, addEntry]);
 
   const endCall = useCallback(() => {
     const vapi = vapiRef.current as { end?: () => void; stop?: () => void } | null;
@@ -260,7 +254,8 @@ export function VapiWidget() {
       vapi?.stop?.();
     }
     setStatus("ended");
-    setTranscript((prev) => [...prev, "[Call manually ended]"]);
+    setCurrentPartial(null);
+    addEntry("system", "Call manually ended");
     if (callIdRef.current) {
       finalizeConversation({
         channelSessionId: callIdRef.current,
@@ -270,7 +265,9 @@ export function VapiWidget() {
     }
     vapiRef.current = null;
     callIdRef.current = null;
-  }, []);
+  }, [addEntry]);
+
+  const hasContent = entries.length > 0 || currentPartial !== null;
 
   return (
     <div className="card widget-shell">
@@ -314,13 +311,21 @@ export function VapiWidget() {
         </span>
       </div>
 
-      {transcript.length > 0 && (
+      {hasContent && (
         <div className="transcript-log" ref={transcriptRef}>
-          {transcript.map((line, i) => (
-            <div key={`${line}-${i}`} className="log-line">
-              {line}
+          {entries.map((entry) => (
+            <div
+              key={entry.id}
+              className={entry.role === "system" ? "log-line-system" : "log-line"}
+            >
+              {entry.role === "system"
+                ? `[${entry.text}]`
+                : `${entry.role === "user" ? "You" : "Agent"}: ${entry.text}`}
             </div>
           ))}
+          {currentPartial && (
+            <div className="log-line-partial">{currentPartial}…</div>
+          )}
         </div>
       )}
     </div>

@@ -41,7 +41,9 @@ export default defineSchema({
     placedAt: v.number(),
     shippedAt: v.optional(v.number()),
     deliveredAt: v.optional(v.number()),
-  }).index("by_order_number", ["orderNumber"]),
+  })
+    .index("by_order_number", ["orderNumber"])
+    .index("by_customer", ["customerId"]),
 
   // ── Support tickets ──
   tickets: defineTable({

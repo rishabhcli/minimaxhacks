@@ -18,6 +18,10 @@ const OrderLookupInput = z.object({
   customerId: z.string().optional(),
 });
 
+const OrderListInput = z.object({
+  customerId: z.string().min(1),
+});
+
 const AccountLookupInput = z.object({
   customerId: z.string().min(1),
 });
@@ -66,6 +70,8 @@ export async function executeToolCall(
       return handleFaqSearch(args);
     case "order.lookup":
       return handleOrderLookup(args);
+    case "order.list":
+      return handleOrderList(args);
     case "account.lookup":
       return handleAccountLookup(args);
     case "ticket.create":
@@ -207,6 +213,52 @@ async function handleOrderLookup(
       },
     })
   );
+}
+
+async function handleOrderList(
+  raw: Record<string, unknown>
+): Promise<ToolResult> {
+  const input = OrderListInput.parse(raw);
+
+  try {
+    const orders = await convex.query(api.orders.getByCustomer, {
+      customerId: input.customerId,
+    });
+
+    if (!orders || orders.length === 0) {
+      return textResult(
+        JSON.stringify({ orders: [], message: "No orders found for this customer" })
+      );
+    }
+
+    return textResult(
+      JSON.stringify({
+        orders: orders.map(
+          (order: {
+            orderNumber: string;
+            status: string;
+            items: Array<{ name: string; quantity: number; priceUsd: number }>;
+            totalUsd: number;
+            placedAt: number;
+            shippedAt?: number;
+            deliveredAt?: number;
+          }) => ({
+            orderNumber: order.orderNumber,
+            status: order.status,
+            items: order.items,
+            totalUsd: order.totalUsd,
+            placedAt: order.placedAt,
+            shippedAt: order.shippedAt,
+            deliveredAt: order.deliveredAt,
+          })
+        ),
+      })
+    );
+  } catch (err) {
+    return textResult(
+      JSON.stringify({ error: "Failed to list orders for this customer" })
+    );
+  }
 }
 
 async function handleAccountLookup(

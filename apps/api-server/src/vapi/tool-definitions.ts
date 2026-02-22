@@ -32,6 +32,21 @@ export const TOOL_FUNCTION_DEFINITIONS = [
   {
     type: "function" as const,
     function: {
+      name: "order_list",
+      description:
+        "List all orders for a customer. Use this when the customer wants to return or check on an order but doesn't know the order number. Requires a customerId (get it from account_lookup first).",
+      parameters: {
+        type: "object",
+        properties: {
+          customerId: { type: "string", description: "Customer ID" },
+        },
+        required: ["customerId"],
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
       name: "account_lookup",
       description: "Look up customer account details",
       parameters: {

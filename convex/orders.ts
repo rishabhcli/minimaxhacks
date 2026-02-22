@@ -13,6 +13,18 @@ export const getByNumber = query({
   },
 });
 
+export const getByCustomer = query({
+  args: { customerId: v.id("customers") },
+  handler: async (ctx, args) => {
+    return await ctx.db
+      .query("orders")
+      .withIndex("by_customer", (q) =>
+        q.eq("customerId", args.customerId)
+      )
+      .collect();
+  },
+});
+
 export const create = mutation({
   args: {
     orderNumber: v.string(),

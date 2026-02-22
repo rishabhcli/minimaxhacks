@@ -9,6 +9,7 @@ describe("getRiskScore", () => {
   it("returns known tool scores", () => {
     assert.equal(getRiskScore("faq.search"), 0.02);
     assert.equal(getRiskScore("order.lookup"), 0.05);
+    assert.equal(getRiskScore("order.list"), 0.05);
     assert.equal(getRiskScore("account.lookup"), 0.08);
     assert.equal(getRiskScore("ticket.create"), 0.10);
     assert.equal(getRiskScore("ticket.escalate"), 0.15);

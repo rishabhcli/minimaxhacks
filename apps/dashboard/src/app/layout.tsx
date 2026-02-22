@@ -27,7 +27,10 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en">
+    <html lang="en" style={{ colorScheme: "dark" }}>
+      <head>
+        <meta name="theme-color" content="#0a0e1a" />
+      </head>
       <body className={`${headingFont.variable} ${monoFont.variable}`}>
         <div className="app-shell">
           <div className="ambient-layer" aria-hidden="true">

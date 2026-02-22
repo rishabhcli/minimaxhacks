@@ -33,6 +33,17 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
     },
   },
   {
+    name: "order.list",
+    description: "List all orders for a customer by customer ID (risk: 0.05)",
+    inputSchema: {
+      type: "object",
+      properties: {
+        customerId: { type: "string", description: "Customer ID to list orders for" },
+      },
+      required: ["customerId"],
+    },
+  },
+  {
     name: "account.lookup",
     description: "Look up customer account details (risk: 0.08)",
     inputSchema: {

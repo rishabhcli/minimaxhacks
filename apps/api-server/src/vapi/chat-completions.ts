@@ -55,10 +55,27 @@ IMPORTANT RULES:
 - If you're unsure what the customer needs, ask clarifying questions
 - Keep responses concise and conversational (this is a voice call)
 
+RETURN/REFUND WORKFLOW:
+When a customer mentions returning an item, wanting a refund, or having an issue with a purchase:
+1. First use faq_search with query "return policy" to retrieve the current return policy
+2. Use account_lookup to identify the customer (if not already known)
+3. Use order_list with the customer's ID to find their orders
+4. Once you identify the specific order, use order_lookup for full details
+5. Explain the applicable return policy based on the item type and purchase date
+6. If eligible, proceed with order_refund; if not, explain why and offer alternatives
+
+KEY POLICY DETAILS (always verify with faq_search for latest):
+- General returns: 30 days from delivery
+- Electronics: 15 days, original packaging required
+- Refund processing: 5-7 business days
+- Return shipping: free for defective items, $9.99 fee for non-defective
+- Late returns (past window): may be accepted with 15% restocking fee
+
 AVAILABLE TOOLS:
-- faq_search: Search knowledge base for answers
+- faq_search: Search knowledge base for policy answers. USE PROACTIVELY when the conversation involves returns, refunds, shipping, or account policies
 - order_lookup: Look up order details by order number
-- account_lookup: Look up customer account
+- order_list: List all orders for a customer by customer ID. Use when customer wants to return/check an order but doesn't know the order number
+- account_lookup: Look up customer account details
 - ticket_create: Create a support ticket
 - ticket_escalate: Escalate a ticket to a human
 - account_update: Update customer account fields
@@ -111,17 +128,74 @@ function buildKbContext(docs: KnowledgeDoc[]): string {
     .join("\n\n");
 }
 
+/**
+ * Extract topic-aware search queries from the conversation.
+ * Supplements the latest user message with domain-specific keywords
+ * when return/refund/shipping/account scenarios are detected.
+ */
+function extractSearchQueries(
+  messages: Array<z.infer<typeof MessageSchema>>
+): string[] {
+  const queries: string[] = [];
+
+  const userTexts = messages
+    .filter((m) => m.role === "user" && typeof m.content === "string")
+    .map((m) => (m.content as string).toLowerCase());
+
+  const allUserText = userTexts.join(" ");
+
+  const latest = latestUserText(messages);
+  if (latest) queries.push(latest);
+
+  const returnKeywords = ["return", "refund", "send back", "exchange", "warranty",
+    "defective", "broken", "damaged", "wrong item", "doesn't work", "not working"];
+  if (returnKeywords.some((kw) => allUserText.includes(kw))) {
+    queries.push("return policy refund");
+  }
+
+  const shippingKeywords = ["shipping", "delivery", "tracking", "when will", "arrive",
+    "shipped", "transit", "delayed"];
+  if (shippingKeywords.some((kw) => allUserText.includes(kw))) {
+    queries.push("shipping information delivery");
+  }
+
+  const accountKeywords = ["account", "password", "email change", "delete account",
+    "two-factor", "2fa", "settings"];
+  if (accountKeywords.some((kw) => allUserText.includes(kw))) {
+    queries.push("account management");
+  }
+
+  return [...new Set(queries)];
+}
+
 async function buildSystemPromptWithKnowledge(
   messages: Array<z.infer<typeof MessageSchema>>
 ): Promise<string> {
-  const userText = latestUserText(messages);
-  if (!userText) return SYSTEM_PROMPT;
+  const queries = extractSearchQueries(messages);
+  if (queries.length === 0) return SYSTEM_PROMPT;
 
   try {
-    const docs = (await convex.query(api.knowledgeDocuments.search, {
-      query: userText,
-    })) as KnowledgeDoc[];
-    const kbContext = buildKbContext(Array.isArray(docs) ? docs : []);
+    const allResults = await Promise.all(
+      queries.map((q) =>
+        convex
+          .query(api.knowledgeDocuments.search, { query: q })
+          .catch(() => [] as KnowledgeDoc[])
+      )
+    );
+
+    const seen = new Set<string>();
+    const uniqueDocs: KnowledgeDoc[] = [];
+    for (const docs of allResults) {
+      for (const doc of Array.isArray(docs) ? docs : []) {
+        const key = doc.title ?? doc.content?.slice(0, 50) ?? "";
+        if (!seen.has(key)) {
+          seen.add(key);
+          uniqueDocs.push(doc);
+        }
+      }
+    }
+
+    const kbContext = buildKbContext(uniqueDocs);
 
     return `${SYSTEM_PROMPT}
 

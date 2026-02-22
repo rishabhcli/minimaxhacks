@@ -127,12 +127,22 @@ const KNOWLEDGE_DOCS = [
     url: "https://shielddesk.example.com/help/returns",
     category: "policy",
     content:
-      "Our return policy allows returns within 30 days of delivery for most items. " +
-      "Electronics must be returned within 15 days and in original packaging. " +
-      "Refunds are processed within 5-7 business days after we receive the returned item. " +
-      "Shipping costs for returns are covered for defective items. " +
-      "For non-defective returns, a $9.99 return shipping fee applies.",
-    contentHash: "return-policy-v1",
+      "SHIELDDESK RETURN & REFUND POLICY\n\n" +
+      "General Return Window: Items may be returned within 30 days of delivery date. " +
+      "Electronics (headphones, laptops, keyboards, monitors, tablets, phones, cameras) must be returned within 15 days of delivery and in original packaging with all accessories. " +
+      "Refunds are processed within 5-7 business days after we receive and inspect the returned item. " +
+      "Refunds are issued to the original payment method.\n\n" +
+      "Return Shipping: Shipping costs for returns of defective or damaged items are fully covered by ShieldDesk. " +
+      "For non-defective returns (change of mind, wrong size, etc.), a $9.99 return shipping fee applies and will be deducted from the refund.\n\n" +
+      "Non-Returnable Items: Gift cards, downloadable software, and clearance/final-sale items cannot be returned.\n\n" +
+      "Late Returns: Items returned after the return window may be accepted at our discretion with a 15% restocking fee. " +
+      "Contact support to request a late return exception.\n\n" +
+      "Damaged or Defective Items: If your item arrived damaged or is defective, contact us immediately. " +
+      "We will arrange free return shipping and issue a full refund or replacement. " +
+      "Please provide photos of the damage for faster processing.\n\n" +
+      "Order Cancellation: Orders in 'processing' status can be cancelled for a full refund. " +
+      "Orders that have already shipped cannot be cancelled but can be returned after delivery.",
+    contentHash: "return-policy-v2",
   },
   {
     title: "Shipping Information",
