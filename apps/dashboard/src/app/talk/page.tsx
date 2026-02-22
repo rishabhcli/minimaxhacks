@@ -3,7 +3,6 @@
 import { useState } from "react";
 import { VapiWidget } from "@/components/VapiWidget";
 import { RedTeamPanel, type AttackScenario } from "@/components/RedTeamPanel";
-import { GovernanceLog } from "@/components/GovernanceLog";
 
 export default function TalkPage() {
   const [redTeamMode, setRedTeamMode] = useState(false);
@@ -60,13 +59,12 @@ export default function TalkPage() {
             />
           </div>
 
-          {/* Right: Voice widget + Governance log stacked */}
-          <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+          {/* Right: Voice widget */}
+          <div>
             <VapiWidget
               trustLevel={trustLevel as 1 | 2 | 3 | 4}
               sentimentOverride={sentimentOverride}
             />
-            <GovernanceLog />
           </div>
         </div>
       )}
