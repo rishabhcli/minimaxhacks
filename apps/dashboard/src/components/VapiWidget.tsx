@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback, useRef, useEffect } from "react";
-import { useMutation } from "convex/react";
+import { ConvexHttpClient } from "convex/browser";
 import { api } from "@/lib/api";
 
 type CallStatus = "idle" | "connecting" | "active" | "ended";
@@ -33,9 +33,7 @@ export function VapiWidget() {
   const callIdRef = useRef<string | null>(null);
   const conversationIdRef = useRef<string | null>(null);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
-  const upsertConversation = useMutation(api.conversations.upsertBySession);
-  const finalizeConversation = useMutation(api.conversations.finalizeBySession);
-  const addTranscript = useMutation(api.transcripts.add);
+  const convexRef = useRef<ConvexHttpClient | null>(null);
 
   const addEntry = useCallback((role: TranscriptEntry["role"], text: string) => {
     setEntries((prev) => [...prev, { id: nextId(), role, text }]);
@@ -91,8 +89,12 @@ export function VapiWidget() {
     async (callId: string | null) => {
       if (!callId) return null;
       if (conversationIdRef.current) return conversationIdRef.current;
+      if (!convexRef.current && process.env.NEXT_PUBLIC_CONVEX_URL) {
+        convexRef.current = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL);
+      }
+      if (!convexRef.current) return null;
       try {
-        const convId = (await upsertConversation({
+        const convId = (await convexRef.current.mutation(api.conversations.upsertBySession, {
           channelType: "vapi_web",
           channelSessionId: callId,
           trustLevel: 2,
@@ -105,7 +107,7 @@ export function VapiWidget() {
         return null;
       }
     },
-    [upsertConversation]
+    []
   );
 
   const startCall = useCallback(async () => {
@@ -164,7 +166,10 @@ export function VapiWidget() {
         addEntry("system", "Call ended");
         if (callIdRef.current) {
           try {
-            await finalizeConversation({
+            if (!convexRef.current && process.env.NEXT_PUBLIC_CONVEX_URL) {
+              convexRef.current = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL);
+            }
+            await convexRef.current?.mutation(api.conversations.finalizeBySession, {
               channelSessionId: callIdRef.current,
               status: "completed",
               endedAt: Date.now(),
@@ -197,7 +202,10 @@ export function VapiWidget() {
               conversationIdRef.current ||
               (await ensureConversationRecord(callIdRef.current));
             if (convId) {
-              addTranscript({
+              if (!convexRef.current && process.env.NEXT_PUBLIC_CONVEX_URL) {
+                convexRef.current = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL);
+              }
+              convexRef.current?.mutation(api.transcripts.add, {
                 conversationId: convId as any,
                 speaker: role === "user" ? "customer" : "agent",
                 isFinal: true,
@@ -257,11 +265,16 @@ export function VapiWidget() {
     setCurrentPartial(null);
     addEntry("system", "Call manually ended");
     if (callIdRef.current) {
-      finalizeConversation({
-        channelSessionId: callIdRef.current,
-        status: "completed",
-        endedAt: Date.now(),
-      }).catch(() => undefined);
+      if (!convexRef.current && process.env.NEXT_PUBLIC_CONVEX_URL) {
+        convexRef.current = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL);
+      }
+      convexRef.current
+        ?.mutation(api.conversations.finalizeBySession, {
+          channelSessionId: callIdRef.current,
+          status: "completed",
+          endedAt: Date.now(),
+        })
+        .catch(() => undefined);
     }
     vapiRef.current = null;
     callIdRef.current = null;
