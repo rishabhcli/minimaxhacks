@@ -20,10 +20,8 @@ Built for the [Return of the Agents](https://lu.ma/ReturnOfTheAgents) hackathon 
 | **MiniMax** | Platinum | LLM brain (M2.5) + RAG embeddings (embo-01) |
 | **VAPI** | Gold | Web voice widget — primary demo channel |
 | **Convex** | Gold | Real-time database, RAG vector search, Agent Threads |
-| **Speechmatics** | Gold | Real-time STT for phone channel + sentiment analysis |
-| **Plivo** | Silver | Telephony (phone channel) + SMS confirmations |
-| **ElevenLabs** | Bronze | Text-to-speech for phone channel |
-| **rtrvr.ai** | Bronze | Web scraping to build RAG knowledge base |
+| **Speechmatics** | Gold | Real-time STT + sentiment analysis |
+| **ElevenLabs** | Bronze | Text-to-speech |
 | **ArmorIQ** | Bronze | Cryptographic policy enforcement on every tool call |
 
 ## Quick start
@@ -50,8 +48,6 @@ cd mcp-server && npm run dev
 cd apps/dashboard && npm run dev
 ```
 
-For the Plivo phone channel, you also need a tunnel (ngrok) to expose the API server.
-
 ## Architecture
 
 ```
@@ -62,10 +58,9 @@ For the Plivo phone channel, you also need a tunnel (ngrok) to expose the API se
               ┌────────────┴────────────┐
               │                         │
      ┌────────▼────────┐     ┌─────────▼─────────┐
-     │   VAPI Widget   │     │   Plivo Phone      │
-     │   (web demo)    │     │   + Speechmatics   │
-     └────────┬────────┘     │   + ElevenLabs     │
-              │              └─────────┬──────────┘
+     │   VAPI Widget   │     │   Speechmatics    │
+     │   (web demo)    │     │   + ElevenLabs     │
+     └────────┬────────┘     └─────────┬──────────┘
               └────────────┬───────────┘
                            │
                   ┌────────▼────────┐
@@ -96,12 +91,12 @@ For the Plivo phone channel, you also need a tunnel (ngrok) to expose the API se
 ## Project structure
 
 ```
-apps/api-server/       — Express server: VAPI webhooks, Plivo webhooks, agent orchestrator
+apps/api-server/       — Express server: VAPI webhooks, agent orchestrator
 apps/dashboard/        — Next.js 14 frontend with Convex real-time subscriptions
 convex/                — Convex schema + queries + mutations
 mcp-server/            — Customer support tool server (JSON-RPC 2.0 + SSE)
 packages/shared/       — Shared TypeScript types
-scripts/               — Setup scripts (VAPI assistant, seed data, scraper)
+scripts/               — Setup scripts (VAPI assistant, seed data)
 eval/                  — Regression harness for intent extraction + policy decisions
 ```
 
