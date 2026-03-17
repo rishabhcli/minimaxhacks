@@ -14,16 +14,6 @@ export const byConversation = query({
   },
 });
 
-export const recent = query({
-  args: { limit: v.optional(v.number()) },
-  handler: async (ctx, args) => {
-    return await ctx.db
-      .query("agentActions")
-      .order("desc")
-      .take(args.limit ?? 50);
-  },
-});
-
 export const byIdempotencyKey = query({
   args: { idempotencyKey: v.string() },
   handler: async (ctx, args) => {
