@@ -9,6 +9,7 @@ dotenv.config({ path: resolve(__dirname, "../../.env") });
 
 const EnvSchema = z.object({
   MCP_PORT: z.coerce.number().default(3001),
+  MCP_AUTH_TOKEN: z.string().min(1),
   CONVEX_URL: z.string().url(),
   MINIMAX_API_KEY: z.string().min(1),
   MINIMAX_BASE_URL: z.string().url().default("https://api.minimax.io/v1"),
