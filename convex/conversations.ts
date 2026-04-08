@@ -31,8 +31,20 @@ export const create = mutation({
     channelType: v.union(v.literal("vapi_web"), v.literal("plivo_phone")),
     channelSessionId: v.string(),
     customerId: v.optional(v.id("customers")),
-    trustLevel: v.number(),
-    sentimentScore: v.optional(v.string()),
+    trustLevel: v.union(
+      v.literal(1),
+      v.literal(2),
+      v.literal(3),
+      v.literal(4)
+    ),
+    sentimentScore: v.optional(
+      v.union(
+        v.literal("frustrated"),
+        v.literal("neutral"),
+        v.literal("satisfied"),
+        v.literal("calm")
+      )
+    ),
   },
   handler: async (ctx, args) => {
     return await ctx.db.insert("conversations", {
@@ -53,7 +65,14 @@ export const update = mutation({
         v.literal("failed")
       )
     ),
-    sentimentScore: v.optional(v.string()),
+    sentimentScore: v.optional(
+      v.union(
+        v.literal("frustrated"),
+        v.literal("neutral"),
+        v.literal("satisfied"),
+        v.literal("calm")
+      )
+    ),
     endedAt: v.optional(v.number()),
     summary: v.optional(v.string()),
   },

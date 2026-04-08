@@ -4,6 +4,7 @@ import { v } from "convex/values";
 export default defineSchema({
   // ── Identity + trust configuration ──
   customers: defineTable({
+    externalId: v.string(),
     email: v.string(),
     phoneE164: v.optional(v.string()),
     displayName: v.string(),
@@ -16,6 +17,7 @@ export default defineSchema({
     tier: v.union(v.literal("free"), v.literal("pro"), v.literal("enterprise")),
     metadata: v.optional(v.any()),
   })
+    .index("by_external_id", ["externalId"])
     .index("by_phone", ["phoneE164"])
     .index("by_email", ["email"]),
 
@@ -80,8 +82,20 @@ export default defineSchema({
       v.literal("completed"),
       v.literal("failed")
     ),
-    trustLevel: v.number(),
-    sentimentScore: v.optional(v.string()),
+    trustLevel: v.union(
+      v.literal(1),
+      v.literal(2),
+      v.literal(3),
+      v.literal(4)
+    ),
+    sentimentScore: v.optional(
+      v.union(
+        v.literal("frustrated"),
+        v.literal("neutral"),
+        v.literal("satisfied"),
+        v.literal("calm")
+      )
+    ),
     startedAt: v.number(),
     endedAt: v.optional(v.number()),
     summary: v.optional(v.string()),
@@ -140,9 +154,11 @@ export default defineSchema({
     conversationId: v.id("conversations"),
     kind: v.union(
       v.literal("message"),
+      v.literal("channel_event"),
       v.literal("tool_called"),
       v.literal("tool_blocked"),
       v.literal("tool_escalated"),
+      v.literal("tool_failed"),
       v.literal("sentiment_changed"),
       v.literal("trust_resolved"),
       v.literal("summary_generated")
@@ -160,6 +176,7 @@ export default defineSchema({
   knowledgeDocuments: defineTable({
     sourceUrl: v.string(),
     title: v.string(),
+    category: v.optional(v.string()),
     content: v.string(),
     contentHash: v.string(),
     chunkIndex: v.number(),

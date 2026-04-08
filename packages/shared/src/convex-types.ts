@@ -63,9 +63,11 @@ export type AgentActionStatus = z.infer<typeof AgentActionStatusSchema>;
 
 export const ConversationEventKindSchema = z.enum([
   "message",
+  "channel_event",
   "tool_called",
   "tool_blocked",
   "tool_escalated",
+  "tool_failed",
   "sentiment_changed",
   "trust_resolved",
   "summary_generated",

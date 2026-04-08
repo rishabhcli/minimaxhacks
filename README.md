@@ -29,24 +29,41 @@ Built for the [Return of the Agents](https://lu.ma/ReturnOfTheAgents) hackathon 
 ```bash
 # 1. Clone and install
 git clone <repo-url> && cd minimaxhacks
-npm install
+npm run bootstrap
 
 # 2. Configure environment
 cp .env.example .env
-# Fill in all API keys (see .env.example for details)
+# Fill in the required service keys and URLs
 
 # 3. Start Convex
-cd convex && npx convex dev
+npm run dev:convex
 
 # 4. Start API server (port 3000)
-cd apps/api-server && npm run dev
+npm run dev:api
 
 # 5. Start MCP tool server (port 3001)
-cd mcp-server && npm run dev
+npm run dev:mcp
 
 # 6. Start dashboard (port 3002)
-cd apps/dashboard && npm run dev
+npm run dev:dashboard
 ```
+
+`MCP_AUTH_TOKEN` must be set in both the API server and MCP server environments. `ALLOW_CLIENT_GOVERNANCE_OVERRIDES` defaults to `false` and should stay disabled outside tightly controlled local demos.
+
+For Vapi webhook auth, configure `VAPI_WEBHOOK_SECRET` and have Vapi send it either as `Authorization: Bearer <secret>` or the legacy `X-Vapi-Secret` header. Plivo callbacks and the `/plivo/ws` upgrade path now validate Plivo V3 webhook signatures using `PLIVO_AUTH_TOKEN`.
+
+## Verification
+
+Use these root commands before shipping changes:
+
+```bash
+npm run build
+npm run test
+npm run typecheck
+npm run eval
+```
+
+The repo expects Node 20.x or newer. Use the pinned `.nvmrc` when switching runtimes.
 
 ## Architecture
 

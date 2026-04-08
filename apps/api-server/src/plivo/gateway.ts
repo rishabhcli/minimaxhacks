@@ -6,6 +6,21 @@ import { SpeechmaticsClient } from "./speechmatics.js";
 import { streamTts } from "./elevenlabs.js";
 import { config } from "../config.js";
 import { executeWithGovernance } from "../policy/executor.js";
+import { getRiskScore } from "../policy/risk-scores.js";
+import {
+  buildConfiguredPublicUrl,
+  validatePlivoV3Signature,
+} from "../request-auth.js";
+import {
+  ensureConversation,
+  getCustomerByPhone,
+  recordConversationEvent,
+  recordMessage,
+  updateConversationSentiment,
+  updateConversationStatus,
+  upsertAgentAction,
+} from "../conversation-audit.js";
+import { toMcpToolName } from "../vapi/tool-definitions.js";
 import type { Sentiment, TrustLevel } from "@shielddesk/shared";
 
 const log = pino({ name: "plivo-gateway" });
@@ -41,6 +56,40 @@ export function attachPlivoWebSocket(server: Server): void {
     const url = new URL(request.url ?? "/", `http://${request.headers.host}`);
 
     if (url.pathname === "/plivo/ws") {
+      if (!config.PLIVO_AUTH_TOKEN) {
+        socket.write(
+          "HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\n\r\nPlivo webhook validation is not configured"
+        );
+        socket.destroy();
+        return;
+      }
+
+      const isValid = validatePlivoV3Signature({
+        method: request.method ?? "GET",
+        url: buildConfiguredPublicUrl(
+          config.PUBLIC_URL,
+          request.url ?? "/plivo/ws",
+          config.PUBLIC_URL.startsWith("https://") ? "wss" : "ws"
+        ),
+        nonce:
+          typeof request.headers["x-plivo-signature-v3-nonce"] === "string"
+            ? request.headers["x-plivo-signature-v3-nonce"]
+            : undefined,
+        signatureHeader:
+          typeof request.headers["x-plivo-signature-v3"] === "string"
+            ? request.headers["x-plivo-signature-v3"]
+            : undefined,
+        authToken: config.PLIVO_AUTH_TOKEN,
+      });
+
+      if (!isValid) {
+        socket.write(
+          "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\n\r\nInvalid Plivo signature"
+        );
+        socket.destroy();
+        return;
+      }
+
       wss.handleUpgrade(request, socket, head, (ws) => {
         wss.emit("connection", ws, request);
       });
@@ -69,10 +118,23 @@ export function attachPlivoWebSocket(server: Server): void {
 
     ws.on("close", () => {
       if (session) {
-        log.info({ callUuid: session.callUuid }, "Plivo WebSocket closed");
-        session.speechmatics?.endStream();
-        session.speechmatics?.close();
-        sessions.delete(session.streamId);
+        const closedSession = session;
+        log.info({ callUuid: closedSession.callUuid }, "Plivo WebSocket closed");
+        closedSession.speechmatics?.endStream();
+        closedSession.speechmatics?.close();
+        if (closedSession.conversationId) {
+          updateConversationStatus(closedSession.conversationId, "completed").catch((err) => {
+            log.warn(
+              {
+                err,
+                conversationId: closedSession.conversationId,
+                callUuid: closedSession.callUuid,
+              },
+              "Failed to mark phone conversation completed on socket close"
+            );
+          });
+        }
+        sessions.delete(closedSession.streamId);
       }
     });
 
@@ -101,8 +163,29 @@ async function handlePlivoMessage(
       const start = msg.start as Record<string, unknown>;
       const streamId = start?.streamId as string ?? `stream-${Date.now()}`;
       const callUuid = start?.callId as string ?? "unknown";
+      const callerPhone =
+        typeof start?.from === "string"
+          ? start.from
+          : typeof start?.From === "string"
+            ? start.From
+            : undefined;
 
-      log.info({ callUuid, streamId }, "Plivo stream started");
+      log.info({ callUuid, streamId, callerPhone }, "Plivo stream started");
+
+      let customerId: string | undefined;
+      let trustLevel: TrustLevel = 1;
+
+      if (callerPhone) {
+        try {
+          const customer = await getCustomerByPhone(callerPhone);
+          if (customer) {
+            customerId = customer._id;
+            trustLevel = customer.trustLevel;
+          }
+        } catch (err) {
+          log.warn({ err, callUuid, callerPhone }, "Failed to resolve caller identity");
+        }
+      }
 
       const newSession: CallSession = {
         callUuid,
@@ -112,10 +195,33 @@ async function handlePlivoMessage(
         turnBuffer: [],
         isPlayingAudio: false,
         sentiment: "neutral",
-        trustLevel: 2, // Default to authenticated; resolved in production via caller ID lookup
-        customerId: undefined,
+        trustLevel,
+        customerId,
         conversationId: undefined,
       };
+
+      try {
+        newSession.conversationId = await ensureConversation({
+          channelType: "plivo_phone",
+          channelSessionId: callUuid,
+          customerId,
+          trustLevel,
+          sentimentScore: newSession.sentiment,
+        });
+
+        await recordConversationEvent(
+          newSession.conversationId,
+          "channel_event",
+          "system",
+          {
+            event: "start",
+            streamId,
+            callerPhone: callerPhone ?? null,
+          }
+        );
+      } catch (err) {
+        log.warn({ err, callUuid }, "Failed to persist phone conversation start");
+      }
 
       sessions.set(streamId, newSession);
       setSession(newSession);
@@ -149,6 +255,16 @@ async function handlePlivoMessage(
 
             if (fullUtterance) {
               log.info({ callUuid, fullUtterance }, "Turn complete");
+              if (newSession.conversationId) {
+                recordMessage(newSession.conversationId, "customer", fullUtterance).catch(
+                  (err) => {
+                    log.warn(
+                      { err, callUuid, conversationId: newSession.conversationId },
+                      "Failed to persist phone customer utterance"
+                    );
+                  }
+                );
+              }
               processUtterance(newSession, fullUtterance).catch((err) => {
                 log.error({ err, callUuid }, "Failed to process utterance");
               });
@@ -156,8 +272,21 @@ async function handlePlivoMessage(
           },
 
           onSentiment: (sentiment) => {
+            const previous = newSession.sentiment;
             newSession.sentiment = sentiment as Sentiment;
             log.info({ callUuid, sentiment }, "Sentiment updated");
+            if (newSession.conversationId) {
+              updateConversationSentiment(
+                newSession.conversationId,
+                previous,
+                newSession.sentiment
+              ).catch((err) => {
+                log.warn(
+                  { err, callUuid, conversationId: newSession.conversationId },
+                  "Failed to persist phone sentiment change"
+                );
+              });
+            }
           },
 
           onError: (error) => {
@@ -213,6 +342,19 @@ async function handlePlivoMessage(
     case "stop": {
       log.info({ callUuid: session?.callUuid }, "Plivo stream stopped");
       session?.speechmatics?.endStream();
+      if (session?.conversationId) {
+        await Promise.all([
+          recordConversationEvent(session.conversationId, "channel_event", "system", {
+            event: "stop",
+          }),
+          updateConversationStatus(session.conversationId, "completed"),
+        ]).catch((err) => {
+          log.warn(
+            { err, conversationId: session.conversationId, callUuid: session.callUuid },
+            "Failed to persist phone stop event"
+          );
+        });
+      }
       break;
     }
 
@@ -283,14 +425,37 @@ async function processUtterance(
 
     if (toolCalls && toolCalls.length > 0) {
       // Process tool calls through governance
-      for (const tc of toolCalls) {
+      for (const [index, tc] of toolCalls.entries()) {
         const toolCall = tc as {
           function: { name: string; arguments: string };
         };
         const toolArgs = JSON.parse(toolCall.function.arguments);
+        const toolName = toMcpToolName(toolCall.function.name);
+        const startedAt = Date.now();
+        const riskScore = getRiskScore(toolName);
+        const idempotencyKey = `plivo:${callUuid}:${startedAt}:${index}`;
+
+        if (session.conversationId) {
+          await upsertAgentAction({
+            conversationId: session.conversationId,
+            customerId: session.customerId,
+            toolName,
+            toolArgs,
+            status: "policy_checking",
+            confidence: 0.9,
+            riskScore,
+            sentimentAtTime: session.sentiment,
+            idempotencyKey,
+          }).catch((err) => {
+            log.warn(
+              { err, callUuid, toolName },
+              "Failed to persist phone policy-checking action"
+            );
+          });
+        }
 
         const result = await executeWithGovernance({
-          toolName: toolCall.function.name,
+          toolName,
           toolArgs,
           confidence: 0.9,
           sentiment: session.sentiment,
@@ -300,14 +465,71 @@ async function processUtterance(
         });
 
         log.info(
-          { callUuid, toolName: toolCall.function.name, decision: result.decision },
+          { callUuid, toolName, decision: result.decision },
           "Phone channel governance result"
         );
+
+        if (session.conversationId) {
+          const durationMs = Date.now() - startedAt;
+          const eventKind =
+            result.decision === "allow"
+              ? "tool_called"
+              : result.decision === "escalate"
+                ? "tool_escalated"
+                : "tool_blocked";
+
+          await Promise.all([
+            upsertAgentAction({
+              conversationId: session.conversationId,
+              customerId: session.customerId,
+              toolName,
+              toolArgs,
+              status:
+                result.decision === "allow"
+                  ? "executed"
+                  : result.decision === "escalate"
+                    ? "escalated"
+                    : "blocked",
+              confidence: 0.9,
+              riskScore: result.riskScore,
+              effectiveThreshold: result.effectiveThreshold,
+              sentimentAtTime: session.sentiment,
+              policyDecision: result.decision,
+              policyReason: result.reason,
+              armoriqTokenId: result.armoriqTokenId,
+              armoriqPlanHash: result.armoriqPlanHash,
+              armoriqVerified: result.armoriqVerified,
+              result: result.toolResult,
+              durationMs,
+              idempotencyKey,
+            }),
+            recordConversationEvent(session.conversationId, eventKind, "agent", {
+              toolName,
+              reason: result.reason,
+              verified: result.armoriqVerified ?? false,
+            }),
+          ]).catch((err) => {
+            log.warn(
+              { err, callUuid, toolName, conversationId: session.conversationId },
+              "Failed to persist phone governance result"
+            );
+          });
+        }
       }
     }
 
     // Speak the response back via ElevenLabs TTS → Plivo
     if (assistantMessage) {
+      if (session.conversationId) {
+        await recordMessage(session.conversationId, "agent", assistantMessage).catch(
+          (err) => {
+            log.warn(
+              { err, callUuid, conversationId: session.conversationId },
+              "Failed to persist phone agent response"
+            );
+          }
+        );
+      }
       await speakToPlivo(session, assistantMessage);
     }
   } catch (err) {

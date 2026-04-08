@@ -69,7 +69,7 @@ const CUSTOMERS = [
 const ORDERS = [
   {
     orderNumber: "ORD-1234",
-    customerId: "cust_auth_01",
+    customerExternalId: "cust_auth_01",
     status: "delivered" as const,
     items: [
       { productName: "Wireless Headphones", quantity: 1, unitPrice: 79.99 },
@@ -79,7 +79,7 @@ const ORDERS = [
   },
   {
     orderNumber: "ORD-5678",
-    customerId: "cust_vip_01",
+    customerExternalId: "cust_vip_01",
     status: "delivered" as const,
     items: [
       { productName: "Laptop Pro 15\"", quantity: 1, unitPrice: 1299.00 },
@@ -90,7 +90,7 @@ const ORDERS = [
   },
   {
     orderNumber: "ORD-9999",
-    customerId: "cust_auth_01",
+    customerExternalId: "cust_auth_01",
     status: "shipped" as const,
     items: [
       { productName: "Mechanical Keyboard", quantity: 1, unitPrice: 149.99 },
@@ -100,7 +100,7 @@ const ORDERS = [
   },
   {
     orderNumber: "ORD-4567",
-    customerId: "cust_premium_01",
+    customerExternalId: "cust_premium_01",
     status: "processing" as const,
     items: [
       { productName: "Monitor 27\"", quantity: 2, unitPrice: 399.99 },
@@ -110,7 +110,7 @@ const ORDERS = [
   },
   {
     orderNumber: "ORD-1111",
-    customerId: "cust_vip_01",
+    customerExternalId: "cust_vip_01",
     status: "processing" as const,
     items: [
       { productName: "Standing Desk", quantity: 1, unitPrice: 599.00 },
@@ -189,8 +189,8 @@ async function seedKnowledge(): Promise<void> {
   console.log("Seeding knowledge documents...");
   for (const doc of KNOWLEDGE_DOCS) {
     try {
-      await convex.mutation(api.knowledgeDocuments.insert, doc);
-      console.log(`  Created: ${doc.title}`);
+      await convex.mutation(api.knowledgeDocuments.upsert, doc);
+      console.log(`  Upserted: ${doc.title}`);
     } catch (err: any) {
       console.log(`  Skipped: ${doc.title} — ${err.message ?? err}`);
     }

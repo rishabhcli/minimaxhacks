@@ -89,7 +89,7 @@ export async function executeWithGovernance(
     };
   }
 
-  // Step 4: ALLOW — try ArmorIQ, fall back to direct MCP on any failure
+  // Step 4: ALLOW — use ArmorIQ when configured, otherwise call MCP directly
   let armoriqTokenId: string | undefined;
   let armoriqPlanHash: string | undefined;
   let armoriqVerified = false;
@@ -141,18 +141,22 @@ export async function executeWithGovernance(
         armoriqVerified: armorResult.verified,
       };
     } catch (armorErr) {
-      // ArmorIQ failed — fall back to direct MCP execution
-      // Policy engine already approved; crypto signing is skipped.
       log.warn(
         { err: armorErr, toolName: input.toolName },
-        "ArmorIQ failed, falling back to direct MCP execution"
+        "ArmorIQ failed; escalating instead of bypassing verification"
       );
+      return {
+        ...base,
+        decision: "escalate",
+        reason:
+          "ArmorIQ verification is currently unavailable. This action requires human review.",
+      };
     }
   } else {
     log.info({ toolName: input.toolName }, "ArmorIQ not configured, using direct MCP");
   }
 
-  // Execute directly via MCP (ArmorIQ not configured or failed gracefully)
+  // Execute directly via MCP when ArmorIQ is not configured
   try {
     const mcpResult = await callMcpServer(input.toolName, input.toolArgs);
     return {
@@ -181,7 +185,10 @@ async function callMcpServer(
 ): Promise<unknown> {
   const response = await fetch(config.MCP_SERVER_URL, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${config.MCP_AUTH_TOKEN}`,
+    },
     body: JSON.stringify({
       jsonrpc: "2.0",
       id: Date.now(),

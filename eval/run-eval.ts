@@ -23,6 +23,8 @@ interface GoldenCase {
     action: string;
     fields: Record<string, unknown>;
     min_confidence: number;
+    observed_confidence?: number;
+    observed_confidence_by_tool?: Record<string, number>;
     plan_steps: string[];
   };
   expected_policy: Record<string, "allow" | "deny" | "escalate">;
@@ -60,9 +62,10 @@ function evaluateCase(testCase: GoldenCase): EvalResult {
   for (const [toolName, expectedDecision] of Object.entries(expected_policy)) {
     const riskScore = getRiskScore(toolName);
 
-    // Use the case's min_confidence as the confidence input
-    // For low-confidence cases (case-007), this tests the escalation path
-    const confidence = expected.min_confidence;
+    const confidence =
+      expected.observed_confidence_by_tool?.[toolName] ??
+      expected.observed_confidence ??
+      expected.min_confidence;
 
     const decision = evaluatePolicy({
       confidence,

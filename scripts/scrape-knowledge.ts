@@ -149,24 +149,13 @@ async function upsertDocument(doc: {
   content: string;
   contentHash: string;
 }): Promise<void> {
-  try {
-    await convex.mutation(api.knowledgeDocuments.upsert, {
-      title: doc.title,
-      url: doc.url,
-      category: doc.category,
-      content: doc.content,
-      contentHash: doc.contentHash,
-    });
-  } catch {
-    // If upsert mutation doesn't exist, fall back to insert
-    await convex.mutation(api.knowledgeDocuments.insert, {
-      title: doc.title,
-      url: doc.url,
-      category: doc.category,
-      content: doc.content,
-      contentHash: doc.contentHash,
-    });
-  }
+  await convex.mutation(api.knowledgeDocuments.upsert, {
+    title: doc.title,
+    url: doc.url,
+    category: doc.category,
+    content: doc.content,
+    contentHash: doc.contentHash,
+  });
 }
 
 // ── Main ──

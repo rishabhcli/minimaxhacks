@@ -93,7 +93,6 @@ export function VapiWidget({ trustLevel = 2, sentimentOverride }: VapiWidgetProp
         metadata: {
           trustLevel,
           sentiment: sentimentOverride ?? "neutral",
-          confidence: 0.9,
         },
       });
     } catch (err) {

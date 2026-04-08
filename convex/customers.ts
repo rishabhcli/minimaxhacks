@@ -28,22 +28,42 @@ export const getByEmail = query({
   },
 });
 
+export const getByExternalId = query({
+  args: { externalId: v.string() },
+  handler: async (ctx, args) => {
+    return await ctx.db
+      .query("customers")
+      .withIndex("by_external_id", (q) => q.eq("externalId", args.externalId))
+      .first();
+  },
+});
+
 export const create = mutation({
   args: {
     externalId: v.string(),
     name: v.string(),
     email: v.string(),
     phone: v.string(),
-    tier: v.string(),
-    trustLevel: v.number(),
+    tier: v.union(
+      v.literal("free"),
+      v.literal("pro"),
+      v.literal("enterprise")
+    ),
+    trustLevel: v.union(
+      v.literal(1),
+      v.literal(2),
+      v.literal(3),
+      v.literal(4)
+    ),
   },
   handler: async (ctx, args) => {
     return await ctx.db.insert("customers", {
+      externalId: args.externalId,
       email: args.email,
       phoneE164: args.phone,
       displayName: args.name,
-      trustLevel: args.trustLevel as 1 | 2 | 3 | 4,
-      tier: args.tier as "free" | "pro" | "enterprise",
+      trustLevel: args.trustLevel,
+      tier: args.tier,
       metadata: { externalId: args.externalId },
     });
   },

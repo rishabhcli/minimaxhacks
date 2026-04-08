@@ -119,5 +119,5 @@ export const TOOL_FUNCTION_DEFINITIONS = [
  * e.g. "faq_search" → "faq.search", "order_lookup" → "order.lookup"
  */
 export function toMcpToolName(vapiName: string): string {
-  return vapiName.replace("_", ".");
+  return vapiName.replace(/_/g, ".");
 }

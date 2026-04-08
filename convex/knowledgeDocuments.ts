@@ -2,29 +2,65 @@ import { action, query, mutation, internalQuery } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { v } from "convex/values";
 
+const EMPTY_EMBEDDING = Array.from({ length: 1536 }, () => 0);
+
+const BaseKnowledgeDocumentArgs = {
+  title: v.string(),
+  url: v.string(),
+  category: v.optional(v.string()),
+  content: v.string(),
+  contentHash: v.string(),
+};
+
+async function getByContentHash(ctx: any, contentHash: string) {
+  return await ctx.db
+    .query("knowledgeDocuments")
+    .withIndex("by_content_hash", (q) => q.eq("contentHash", contentHash))
+    .first();
+}
+
 export const insert = mutation({
-  args: {
-    title: v.string(),
-    url: v.string(),
-    category: v.string(),
-    content: v.string(),
-    contentHash: v.string(),
-  },
+  args: BaseKnowledgeDocumentArgs,
   handler: async (ctx, args) => {
-    // Check for existing document with same contentHash
-    const existing = await ctx.db
-      .query("knowledgeDocuments")
-      .withIndex("by_content_hash", (q) => q.eq("contentHash", args.contentHash))
-      .first();
+    const existing = await getByContentHash(ctx, args.contentHash);
     if (existing) return existing._id;
 
     return await ctx.db.insert("knowledgeDocuments", {
       title: args.title,
+      category: args.category,
       sourceUrl: args.url,
       content: args.content,
       contentHash: args.contentHash,
       chunkIndex: 0,
-      embedding: [], // Will be populated by embedding pipeline
+      embedding: EMPTY_EMBEDDING,
+      scrapedAt: Date.now(),
+    });
+  },
+});
+
+export const upsert = mutation({
+  args: BaseKnowledgeDocumentArgs,
+  handler: async (ctx, args) => {
+    const existing = await getByContentHash(ctx, args.contentHash);
+    if (existing) {
+      await ctx.db.patch(existing._id, {
+        title: args.title,
+        category: args.category,
+        sourceUrl: args.url,
+        content: args.content,
+        scrapedAt: Date.now(),
+      });
+      return existing._id;
+    }
+
+    return await ctx.db.insert("knowledgeDocuments", {
+      title: args.title,
+      category: args.category,
+      sourceUrl: args.url,
+      content: args.content,
+      contentHash: args.contentHash,
+      chunkIndex: 0,
+      embedding: EMPTY_EMBEDDING,
       scrapedAt: Date.now(),
     });
   },
@@ -35,20 +71,19 @@ export const insertWithEmbedding = mutation({
   args: {
     title: v.string(),
     sourceUrl: v.string(),
+    category: v.optional(v.string()),
     content: v.string(),
     contentHash: v.string(),
     chunkIndex: v.number(),
     embedding: v.array(v.float64()),
   },
   handler: async (ctx, args) => {
-    const existing = await ctx.db
-      .query("knowledgeDocuments")
-      .withIndex("by_content_hash", (q) => q.eq("contentHash", args.contentHash))
-      .first();
+    const existing = await getByContentHash(ctx, args.contentHash);
     if (existing) return existing._id;
 
     return await ctx.db.insert("knowledgeDocuments", {
       title: args.title,
+      category: args.category,
       sourceUrl: args.sourceUrl,
       content: args.content,
       contentHash: args.contentHash,

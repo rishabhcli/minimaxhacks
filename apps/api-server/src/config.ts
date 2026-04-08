@@ -14,10 +14,25 @@ const EnvSchema = z.object({
   MINIMAX_BASE_URL: z.string().url().default("https://api.minimax.io/v1"),
   MINIMAX_MODEL: z.string().default("MiniMax-M2.5"),
   MCP_SERVER_URL: z.string().url().default("http://localhost:3001/mcp"),
+  MCP_AUTH_TOKEN: z.string().min(1),
+  VAPI_WEBHOOK_SECRET: z.string().default(""),
   ARMORIQ_API_KEY: z.string().default(""),
   ARMORIQ_USER_ID: z.string().default(""),
   ARMORIQ_AGENT_ID: z.string().default(""),
   PUBLIC_URL: z.string().default("http://localhost:3000"),
+  CORS_ALLOW_ORIGINS: z
+    .string()
+    .default("http://localhost:3002")
+    .transform((value) =>
+      value
+        .split(",")
+        .map((origin) => origin.trim())
+        .filter(Boolean)
+    ),
+  ALLOW_CLIENT_GOVERNANCE_OVERRIDES: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((value) => value === "true"),
   // Plivo
   PLIVO_AUTH_ID: z.string().default(""),
   PLIVO_AUTH_TOKEN: z.string().default(""),

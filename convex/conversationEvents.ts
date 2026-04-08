@@ -19,9 +19,11 @@ export const add = mutation({
     conversationId: v.id("conversations"),
     kind: v.union(
       v.literal("message"),
+      v.literal("channel_event"),
       v.literal("tool_called"),
       v.literal("tool_blocked"),
       v.literal("tool_escalated"),
+      v.literal("tool_failed"),
       v.literal("sentiment_changed"),
       v.literal("trust_resolved"),
       v.literal("summary_generated")

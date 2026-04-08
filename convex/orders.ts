@@ -16,13 +16,21 @@ export const getByNumber = query({
 export const create = mutation({
   args: {
     orderNumber: v.string(),
-    customerId: v.string(),
-    status: v.string(),
-    items: v.array(v.object({
-      productName: v.string(),
-      quantity: v.number(),
-      unitPrice: v.number(),
-    })),
+    customerExternalId: v.string(),
+    status: v.union(
+      v.literal("processing"),
+      v.literal("shipped"),
+      v.literal("delivered"),
+      v.literal("cancelled"),
+      v.literal("refunded")
+    ),
+    items: v.array(
+      v.object({
+        productName: v.string(),
+        quantity: v.number(),
+        unitPrice: v.number(),
+      })
+    ),
     totalAmount: v.number(),
     createdAt: v.number(),
   },
@@ -34,16 +42,23 @@ export const create = mutation({
       priceUsd: i.unitPrice,
     }));
 
-    // Find customer by metadata.externalId
-    const customers = await ctx.db.query("customers").collect();
-    const customer = customers.find(
-      (c) => (c.metadata as { externalId?: string })?.externalId === args.customerId
-    );
+    const customer = await ctx.db
+      .query("customers")
+      .withIndex("by_external_id", (q) =>
+        q.eq("externalId", args.customerExternalId)
+      )
+      .first();
+
+    if (!customer) {
+      throw new Error(
+        `Customer not found for externalId ${args.customerExternalId}`
+      );
+    }
 
     return await ctx.db.insert("orders", {
       orderNumber: args.orderNumber,
-      customerId: customer?._id ?? ("" as any),
-      status: args.status as "processing" | "shipped" | "delivered" | "cancelled" | "refunded",
+      customerId: customer._id,
+      status: args.status,
       items,
       totalUsd: args.totalAmount,
       placedAt: args.createdAt,

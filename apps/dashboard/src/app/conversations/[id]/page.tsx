@@ -179,9 +179,7 @@ export default function ConversationDetailPage() {
                 </span>
               </div>
               <div style={{ fontSize: "0.875rem", marginTop: "0.25rem" }}>
-                {typeof e.payload === "object" && e.payload !== null
-                  ? JSON.stringify(e.payload)
-                  : String(e.payload ?? "")}
+                {renderEventPayload(e)}
               </div>
             </div>
           </div>
@@ -196,6 +194,7 @@ function getBadgeClass(kind: string): string {
     case "tool_called": return "badge-allow";
     case "tool_blocked": return "badge-deny";
     case "tool_escalated": return "badge-escalate";
+    case "tool_failed": return "badge-deny";
     case "message": return "badge-active";
     default: return "badge-completed";
   }
@@ -203,4 +202,50 @@ function getBadgeClass(kind: string): string {
 
 function formatKind(kind: string): string {
   return kind.replace(/_/g, " ");
+}
+
+function renderEventPayload(event: ConversationEvent): string {
+  const payload =
+    typeof event.payload === "object" && event.payload !== null
+      ? (event.payload as Record<string, unknown>)
+      : null;
+
+  if (!payload) {
+    return String(event.payload ?? "");
+  }
+
+  switch (event.kind) {
+    case "message":
+      return typeof payload.text === "string" ? payload.text : JSON.stringify(payload);
+    case "tool_called":
+      return formatToolEvent(
+        payload.toolName,
+        payload.reason,
+        payload.verified === true ? "verified" : null
+      );
+    case "tool_blocked":
+      return formatToolEvent(payload.toolName, payload.reason, "blocked");
+    case "tool_escalated":
+      return formatToolEvent(payload.toolName, payload.reason, "escalated");
+    case "tool_failed":
+      return formatToolEvent(payload.toolName, payload.error, "failed");
+    case "sentiment_changed":
+      return `Sentiment changed from ${String(payload.previous ?? "unknown")} to ${String(payload.current ?? "unknown")}`;
+    case "trust_resolved":
+      return `Trust resolved to level ${String(payload.trustLevel ?? "?")}`;
+    case "channel_event":
+      return `Channel event: ${String(payload.messageType ?? "unknown")}`;
+    default:
+      return JSON.stringify(payload);
+  }
+}
+
+function formatToolEvent(
+  toolName: unknown,
+  detail: unknown,
+  suffix: string | null
+): string {
+  const base = typeof toolName === "string" ? toolName : "tool";
+  const tail = typeof detail === "string" && detail.trim() ? `: ${detail}` : "";
+  return suffix ? `${base} ${suffix}${tail}` : `${base}${tail}`;
 }
