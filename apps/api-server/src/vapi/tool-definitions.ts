@@ -23,7 +23,7 @@ export const TOOL_FUNCTION_DEFINITIONS = [
         type: "object",
         properties: {
           orderNumber: { type: "string", description: "The order number" },
-          customerId: { type: "string", description: "Optional customer ID" },
+          customerId: { type: "string", description: "Optional customer reference; verified session context is required" },
         },
         required: ["orderNumber"],
       },
@@ -47,7 +47,7 @@ export const TOOL_FUNCTION_DEFINITIONS = [
     type: "function" as const,
     function: {
       name: "ticket_create",
-      description: "Create a support ticket",
+      description: "Create a support ticket for the verified customer",
       parameters: {
         type: "object",
         properties: {
@@ -57,7 +57,7 @@ export const TOOL_FUNCTION_DEFINITIONS = [
             type: "string",
             enum: ["low", "medium", "high", "urgent"],
           },
-          customerId: { type: "string", description: "Customer ID" },
+          customerId: { type: "string", description: "Optional customer reference; verified session context is required" },
         },
         required: ["subject", "description"],
       },
@@ -83,11 +83,11 @@ export const TOOL_FUNCTION_DEFINITIONS = [
     type: "function" as const,
     function: {
       name: "account_update",
-      description: "Update customer account fields",
+      description: "Update the verified customer account fields",
       parameters: {
         type: "object",
         properties: {
-          customerId: { type: "string", description: "Customer ID" },
+          customerId: { type: "string", description: "Customer reference; must match verified session context" },
           email: { type: "string", description: "New email" },
           displayName: { type: "string", description: "New display name" },
           phoneE164: { type: "string", description: "New phone (E.164)" },

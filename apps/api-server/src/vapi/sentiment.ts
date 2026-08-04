@@ -2,6 +2,7 @@ import pino from "pino";
 import { z } from "zod";
 import { config } from "../config.js";
 import { SentimentSchema, type Sentiment } from "@shielddesk/shared";
+import { fetchWithProviderPolicy } from "../provider-http.js";
 
 const log = pino({ name: "sentiment-analyzer" });
 
@@ -38,11 +39,12 @@ const SentimentResponseSchema = z.object({
 
 /**
  * Analyze sentiment of a user message via a lightweight MiniMax call.
- * Returns the detected sentiment, or "neutral" on any failure.
+ * An unavailable or invalid provider response returns undefined so callers can
+ * preserve the last known governance posture instead of silently changing it.
  */
-export async function analyzeSentiment(message: string): Promise<Sentiment> {
+export async function analyzeSentiment(message: string): Promise<Sentiment | undefined> {
   try {
-    const response = await fetch(
+    const response = await fetchWithProviderPolicy(
       `${config.MINIMAX_BASE_URL}/chat/completions`,
       {
         method: "POST",
@@ -62,31 +64,32 @@ export async function analyzeSentiment(message: string): Promise<Sentiment> {
           temperature: 0,
           stream: false,
         }),
-      }
+      },
+      { timeoutMs: config.PROVIDER_TIMEOUT_MS, maxAttempts: 2 },
     );
 
     if (!response.ok) {
       log.warn({ status: response.status }, "Sentiment API call failed");
-      return "neutral";
+      return undefined;
     }
 
     const data = SentimentResponseSchema.safeParse(await response.json());
     if (!data.success) {
       log.warn("Sentiment response parse failed");
-      return "neutral";
+      return undefined;
     }
 
     const raw = data.data.choices[0]?.message.content.trim().toLowerCase();
     const parsed = SentimentSchema.safeParse(raw);
     if (!parsed.success) {
-      log.warn({ raw }, "Unexpected sentiment value, defaulting to neutral");
-      return "neutral";
+      log.warn({ raw }, "Unexpected sentiment value; preserving cached sentiment");
+      return undefined;
     }
 
-    log.info({ sentiment: parsed.data, messagePreview: message.slice(0, 60) }, "Sentiment detected");
+    log.info({ sentiment: parsed.data, messageLength: message.length }, "Sentiment detected");
     return parsed.data;
   } catch (err) {
-    log.warn({ err }, "Sentiment analysis error, defaulting to neutral");
-    return "neutral";
+    log.warn({ err }, "Sentiment analysis error; preserving cached sentiment");
+    return undefined;
   }
 }

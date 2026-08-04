@@ -27,7 +27,7 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
       type: "object",
       properties: {
         orderNumber: { type: "string", description: "The order number to look up" },
-        customerId: { type: "string", description: "Optional customer ID to scope lookup" },
+        customerId: { type: "string", description: "Optional customer reference; a verified session context is always required" },
       },
       required: ["orderNumber"],
     },
@@ -45,7 +45,7 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
   },
   {
     name: "ticket.create",
-    description: "Create a support ticket (risk: 0.10)",
+    description: "Create a support ticket for the verified customer (risk: 0.10)",
     inputSchema: {
       type: "object",
       properties: {
@@ -56,7 +56,7 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
           enum: ["low", "medium", "high", "urgent"],
           description: "Ticket priority level",
         },
-        customerId: { type: "string", description: "Customer ID" },
+        customerId: { type: "string", description: "Optional customer reference; verified session context is required" },
       },
       required: ["subject", "description"],
     },
@@ -80,11 +80,11 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
   },
   {
     name: "account.update",
-    description: "Update customer account fields (risk: 0.40)",
+    description: "Update the verified customer account fields (risk: 0.40)",
     inputSchema: {
       type: "object",
       properties: {
-        customerId: { type: "string", description: "Customer ID to update" },
+        customerId: { type: "string", description: "Customer reference to update; must match verified session context" },
         email: { type: "string", description: "New email address" },
         displayName: { type: "string", description: "New display name" },
         phoneE164: { type: "string", description: "New phone number in E.164 format" },
@@ -98,7 +98,7 @@ export const TOOL_MANIFESTS: ToolManifest[] = [
     inputSchema: {
       type: "object",
       properties: {
-        orderId: { type: "string", description: "Order ID to refund" },
+        orderId: { type: "string", description: "Order number (for example ORD-5678) or internal order ID" },
         reason: { type: "string", description: "Reason for refund" },
         amountUsd: { type: "number", description: "Partial refund amount in USD (omit for full refund)" },
       },

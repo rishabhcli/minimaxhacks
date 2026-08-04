@@ -25,6 +25,12 @@ if (!CONVEX_URL) {
   console.error("Missing CONVEX_URL environment variable");
   process.exit(1);
 }
+const MINIMAX_API_KEY = process.env.MINIMAX_API_KEY;
+if (!MINIMAX_API_KEY) {
+  console.error("Missing MINIMAX_API_KEY environment variable; seed data requires real embo-01 embeddings");
+  process.exit(1);
+}
+const MINIMAX_BASE_URL = process.env.MINIMAX_BASE_URL ?? "https://api.minimax.io/v1";
 
 const api = anyApi;
 const convex = new ConvexHttpClient(CONVEX_URL);
@@ -189,7 +195,8 @@ async function seedKnowledge(): Promise<void> {
   console.log("Seeding knowledge documents...");
   for (const doc of KNOWLEDGE_DOCS) {
     try {
-      await convex.mutation(api.knowledgeDocuments.upsert, doc);
+      const embedding = await createEmbedding(doc.content);
+      await convex.mutation(api.knowledgeDocuments.upsert, { ...doc, embedding });
       console.log(`  Upserted: ${doc.title}`);
     } catch (err: any) {
       console.log(`  Skipped: ${doc.title} — ${err.message ?? err}`);
@@ -197,9 +204,27 @@ async function seedKnowledge(): Promise<void> {
   }
 }
 
+async function createEmbedding(input: string): Promise<number[]> {
+  const response = await fetch(`${MINIMAX_BASE_URL}/embeddings`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${MINIMAX_API_KEY}`,
+    },
+    body: JSON.stringify({ model: "embo-01", input: [input], type: "db" }),
+  });
+  if (!response.ok) throw new Error(`MiniMax embeddings returned HTTP ${response.status}`);
+  const payload = (await response.json()) as { data?: Array<{ embedding?: number[] }> };
+  const embedding = payload.data?.[0]?.embedding;
+  if (!embedding || embedding.length !== 1536) {
+    throw new Error("MiniMax returned an invalid embo-01 embedding");
+  }
+  return embedding;
+}
+
 // ── Main ──
 
-async function main(): Promise<void> {
+export async function seedDemoData(): Promise<void> {
   console.log("ShieldDesk AI — Seed Data");
   console.log("=========================\n");
 
@@ -216,7 +241,9 @@ async function main(): Promise<void> {
   );
 }
 
-main().catch((err) => {
-  console.error("Fatal error:", err);
-  process.exit(1);
-});
+if (process.argv[1] && resolve(process.argv[1]) === resolve(__dotenvDir, "seed-data.ts")) {
+  seedDemoData().catch((err) => {
+    console.error("Fatal error:", err);
+    process.exit(1);
+  });
+}

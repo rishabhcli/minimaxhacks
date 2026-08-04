@@ -1,10 +1,34 @@
 import { query, mutation } from "./_generated/server";
 import { v } from "convex/values";
 
+export const list = query({
+  handler: async (ctx) => {
+    return await ctx.db.query("customers").order("desc").take(100);
+  },
+});
+
 export const getById = query({
   args: { id: v.id("customers") },
   handler: async (ctx, args) => {
     return await ctx.db.get(args.id);
+  },
+});
+
+/** Resolve either a Convex document id or the external id used by providers. */
+export const getByReference = query({
+  args: { reference: v.string() },
+  handler: async (ctx, args) => {
+    const byExternalId = await ctx.db
+      .query("customers")
+      .withIndex("by_external_id", (q) => q.eq("externalId", args.reference))
+      .first();
+    if (byExternalId) return byExternalId;
+
+    try {
+      return await ctx.db.get(args.reference as any);
+    } catch {
+      return null;
+    }
   },
 });
 

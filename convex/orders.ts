@@ -1,15 +1,29 @@
 import { query, mutation } from "./_generated/server";
 import { v } from "convex/values";
 
+async function customerOwnsOrder(ctx: any, orderCustomerId: string, reference: string): Promise<boolean> {
+  const customer = await ctx.db
+    .query("customers")
+    .withIndex("by_external_id", (q: any) => q.eq("externalId", reference))
+    .first();
+  return customer?._id === orderCustomerId || String(orderCustomerId) === reference;
+}
+
 export const getByNumber = query({
-  args: { orderNumber: v.string() },
+  args: {
+    orderNumber: v.string(),
+    customerId: v.string(),
+  },
   handler: async (ctx, args) => {
-    return await ctx.db
+    const order = await ctx.db
       .query("orders")
       .withIndex("by_order_number", (q) =>
         q.eq("orderNumber", args.orderNumber)
       )
       .first();
+
+    if (!order) return null;
+    return (await customerOwnsOrder(ctx, order.customerId, args.customerId)) ? order : null;
   },
 });
 
@@ -68,21 +82,60 @@ export const create = mutation({
 
 export const refund = mutation({
   args: {
-    id: v.id("orders"),
+    id: v.optional(v.id("orders")),
+    orderNumber: v.optional(v.string()),
+    customerId: v.string(),
     reason: v.optional(v.string()),
     amountUsd: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
-    const order = await ctx.db.get(args.id);
+    if (!args.id && !args.orderNumber) {
+      throw new Error("Refund requires an order id or order number");
+    }
+
+    const order = args.id
+      ? await ctx.db.get(args.id)
+      : await ctx.db
+          .query("orders")
+          .withIndex("by_order_number", (q) =>
+            q.eq("orderNumber", args.orderNumber as string)
+          )
+          .first();
     if (!order) throw new Error("Order not found");
 
-    await ctx.db.patch(args.id, { status: "refunded" });
+    if (!(await customerOwnsOrder(ctx, order.customerId, args.customerId))) {
+      throw new Error("Order is outside the verified customer scope");
+    }
+
+    if (order.status === "refunded") {
+      return {
+        refundId: `ref_${order._id}`,
+        status: "already_refunded" as const,
+        amountUsd: order.totalUsd,
+      };
+    }
+    if (order.status === "cancelled") {
+      throw new Error("Cancelled orders are not eligible for refunds");
+    }
 
     const refundAmount = args.amountUsd ?? order.totalUsd;
+    if (!Number.isFinite(refundAmount) || refundAmount <= 0) {
+      throw new Error("Refund amount must be greater than zero");
+    }
+    if (refundAmount > order.totalUsd) {
+      throw new Error("Refund amount cannot exceed the order total");
+    }
+    if (Math.abs(refundAmount - order.totalUsd) > 0.005) {
+      throw new Error("Partial refunds are not supported by the current order ledger");
+    }
+
+    await ctx.db.patch(order._id, { status: "refunded" });
+
     return {
-      refundId: `ref_${args.id}`,
+      refundId: `ref_${order._id}`,
       status: "processed" as const,
       amountUsd: refundAmount,
+      reason: args.reason,
     };
   },
 });

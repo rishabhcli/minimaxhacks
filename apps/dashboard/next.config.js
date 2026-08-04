@@ -3,6 +3,8 @@ require("dotenv").config({ path: path.resolve(__dirname, "../../.env") });
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  agentRules: false,
+  outputFileTracingRoot: path.resolve(__dirname, "../.."),
   env: {
     NEXT_PUBLIC_CONVEX_URL: process.env.NEXT_PUBLIC_CONVEX_URL,
     NEXT_PUBLIC_VAPI_PUBLIC_KEY: process.env.VAPI_PUBLIC_KEY,

@@ -67,11 +67,11 @@ export function resolveGovernanceContext({
         ? requestedConfidence
         : 0.9,
     conversationId:
-      typeof sessionMeta.conversationId === "string"
+      allowClientOverrides && typeof sessionMeta.conversationId === "string"
         ? sessionMeta.conversationId
         : undefined,
     customerId:
-      typeof sessionMeta.customerId === "string"
+      allowClientOverrides && typeof sessionMeta.customerId === "string"
         ? sessionMeta.customerId
         : undefined,
   };

@@ -23,6 +23,18 @@ interface StoredCustomer {
   trustLevel: TrustLevel;
 }
 
+export async function resolveCustomerReference(
+  reference?: string,
+): Promise<string | undefined> {
+  if (!reference) return undefined;
+
+  const customer = (await convex.query(api.customers.getByReference, {
+    reference,
+  })) as { _id: string } | null;
+
+  return customer?._id;
+}
+
 interface EnsureConversationInput {
   channelType: ChannelType;
   channelSessionId: string;
@@ -31,7 +43,7 @@ interface EnsureConversationInput {
   sentimentScore?: Sentiment;
 }
 
-interface ActionRecordInput {
+export interface ActionRecordInput {
   conversationId?: string;
   customerId?: string;
   toolName: string;
@@ -50,6 +62,14 @@ interface ActionRecordInput {
   errorMessage?: string;
   durationMs?: number;
   idempotencyKey: string;
+}
+
+export interface ExistingAgentAction {
+  status: AgentActionStatus;
+  policyDecision?: PolicyDecisionKind;
+  policyReason?: string;
+  result?: unknown;
+  errorMessage?: string;
 }
 
 async function getConversationBySessionId(
@@ -196,4 +216,19 @@ export async function upsertAgentAction(
   input: ActionRecordInput
 ): Promise<void> {
   await convex.mutation(api.agentActions.upsertByIdempotencyKey, input);
+}
+
+export async function claimAgentAction(
+  input: ActionRecordInput
+): Promise<{ claimed: boolean; existing?: ExistingAgentAction }> {
+  return (await convex.mutation(api.agentActions.claimByIdempotencyKey, {
+    conversationId: input.conversationId,
+    customerId: input.customerId,
+    toolName: input.toolName,
+    toolArgs: input.toolArgs,
+    confidence: input.confidence,
+    riskScore: input.riskScore,
+    sentimentAtTime: input.sentimentAtTime,
+    idempotencyKey: input.idempotencyKey,
+  })) as { claimed: boolean; existing?: ExistingAgentAction };
 }

@@ -9,6 +9,7 @@ import {
   invoke as armoriqInvoke,
 } from "./armoriq-client.js";
 import type { Sentiment, TrustLevel } from "@shielddesk/shared";
+import { fetchWithProviderPolicy } from "../provider-http.js";
 
 const log = pino({ name: "policy-executor" });
 
@@ -123,7 +124,11 @@ export async function executeWithGovernance(
         config.MCP_SERVER_URL,
         input.toolName,
         token,
-        input.toolArgs
+        input.toolArgs,
+        {
+          conversationId: input.conversationId,
+          customerId: input.customerId,
+        },
       );
 
       log.info(
@@ -158,7 +163,10 @@ export async function executeWithGovernance(
 
   // Execute directly via MCP when ArmorIQ is not configured
   try {
-    const mcpResult = await callMcpServer(input.toolName, input.toolArgs);
+    const mcpResult = await callMcpServer(input.toolName, input.toolArgs, {
+      conversationId: input.conversationId,
+      customerId: input.customerId,
+    });
     return {
       ...base,
       decision: "allow",
@@ -181,24 +189,30 @@ export async function executeWithGovernance(
  */
 async function callMcpServer(
   toolName: string,
-  toolArgs: Record<string, unknown>
+  toolArgs: Record<string, unknown>,
+  context: { customerId?: string; conversationId?: string },
 ): Promise<unknown> {
-  const response = await fetch(config.MCP_SERVER_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${config.MCP_AUTH_TOKEN}`,
-    },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: Date.now(),
-      method: "tools/call",
-      params: {
-        name: toolName,
-        arguments: toolArgs,
+  const response = await fetchWithProviderPolicy(
+    config.MCP_SERVER_URL,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.MCP_AUTH_TOKEN}`,
       },
-    }),
-  });
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: Date.now(),
+        method: "tools/call",
+        params: {
+          name: toolName,
+          arguments: toolArgs,
+          context,
+        },
+      }),
+    },
+    { timeoutMs: config.PROVIDER_TIMEOUT_MS, maxAttempts: 1 },
+  );
 
   if (!response.ok) {
     throw new Error(`MCP server returned ${response.status}`);

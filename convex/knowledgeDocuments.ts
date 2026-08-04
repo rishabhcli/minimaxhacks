@@ -2,15 +2,20 @@ import { action, query, mutation, internalQuery } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { v } from "convex/values";
 
-const EMPTY_EMBEDDING = Array.from({ length: 1536 }, () => 0);
-
 const BaseKnowledgeDocumentArgs = {
   title: v.string(),
   url: v.string(),
   category: v.optional(v.string()),
   content: v.string(),
   contentHash: v.string(),
+  embedding: v.array(v.float64()),
 };
+
+function assertEmbeddingDimension(embedding: number[]): void {
+  if (embedding.length !== 1536) {
+    throw new Error(`Knowledge embedding must contain 1536 values, received ${embedding.length}`);
+  }
+}
 
 async function getByContentHash(ctx: any, contentHash: string) {
   return await ctx.db
@@ -22,6 +27,7 @@ async function getByContentHash(ctx: any, contentHash: string) {
 export const insert = mutation({
   args: BaseKnowledgeDocumentArgs,
   handler: async (ctx, args) => {
+    assertEmbeddingDimension(args.embedding);
     const existing = await getByContentHash(ctx, args.contentHash);
     if (existing) return existing._id;
 
@@ -32,7 +38,7 @@ export const insert = mutation({
       content: args.content,
       contentHash: args.contentHash,
       chunkIndex: 0,
-      embedding: EMPTY_EMBEDDING,
+      embedding: args.embedding,
       scrapedAt: Date.now(),
     });
   },
@@ -41,6 +47,7 @@ export const insert = mutation({
 export const upsert = mutation({
   args: BaseKnowledgeDocumentArgs,
   handler: async (ctx, args) => {
+    assertEmbeddingDimension(args.embedding);
     const existing = await getByContentHash(ctx, args.contentHash);
     if (existing) {
       await ctx.db.patch(existing._id, {
@@ -48,6 +55,7 @@ export const upsert = mutation({
         category: args.category,
         sourceUrl: args.url,
         content: args.content,
+        embedding: args.embedding,
         scrapedAt: Date.now(),
       });
       return existing._id;
@@ -60,7 +68,7 @@ export const upsert = mutation({
       content: args.content,
       contentHash: args.contentHash,
       chunkIndex: 0,
-      embedding: EMPTY_EMBEDDING,
+      embedding: args.embedding,
       scrapedAt: Date.now(),
     });
   },
@@ -78,8 +86,20 @@ export const insertWithEmbedding = mutation({
     embedding: v.array(v.float64()),
   },
   handler: async (ctx, args) => {
+    assertEmbeddingDimension(args.embedding);
     const existing = await getByContentHash(ctx, args.contentHash);
-    if (existing) return existing._id;
+    if (existing) {
+      await ctx.db.patch(existing._id, {
+        title: args.title,
+        sourceUrl: args.sourceUrl,
+        category: args.category,
+        content: args.content,
+        chunkIndex: args.chunkIndex,
+        embedding: args.embedding,
+        scrapedAt: Date.now(),
+      });
+      return existing._id;
+    }
 
     return await ctx.db.insert("knowledgeDocuments", {
       title: args.title,

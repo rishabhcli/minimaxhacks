@@ -1,5 +1,6 @@
 import pino from "pino";
 import { config } from "../config.js";
+import { fetchWithProviderPolicy } from "../provider-http.js";
 
 const log = pino({ name: "elevenlabs-tts" });
 
@@ -24,26 +25,29 @@ export async function streamTts(
 
   const url = `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream?output_format=ulaw_8000`;
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "xi-api-key": config.ELEVENLABS_API_KEY,
-    },
-    body: JSON.stringify({
-      text,
-      model_id: "eleven_flash_v2_5",
-      voice_settings: {
-        stability: 0.5,
-        similarity_boost: 0.75,
+  const response = await fetchWithProviderPolicy(
+    url,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "xi-api-key": config.ELEVENLABS_API_KEY,
       },
-    }),
-  });
+      body: JSON.stringify({
+        text,
+        model_id: "eleven_flash_v2_5",
+        voice_settings: {
+          stability: 0.5,
+          similarity_boost: 0.75,
+        },
+      }),
+    },
+    { timeoutMs: config.PROVIDER_TIMEOUT_MS, maxAttempts: 1 },
+  );
 
   if (!response.ok) {
-    const errText = await response.text();
     log.error(
-      { status: response.status, body: errText },
+      { status: response.status },
       "ElevenLabs TTS error"
     );
     throw new Error(`ElevenLabs TTS failed: ${response.status}`);

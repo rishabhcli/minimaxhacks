@@ -24,17 +24,38 @@ let baseUrl = "";
 const actionWrites: Array<{ status?: string }> = [];
 const eventWrites: EventPayload[] = [];
 const statusWrites: Array<{ conversationId: string; status: string }> = [];
-const ensuredConversations: Array<{ channelSessionId?: string }> = [];
+const ensuredConversations: Array<{ channelSessionId?: string; customerId?: string }> = [];
+const clearedSentiments: string[] = [];
 
-const createRouter = (behavior: "allow" | "escalate" | "throw") =>
+const createRouter = (
+  behavior: "allow" | "escalate" | "throw" | "replay",
+  overrides: Parameters<typeof createToolCallsRouter>[0] = {},
+) =>
   createToolCallsRouter({
     now: () => 1000,
     getSentiment: () => "neutral",
+    clearSentiment: (callId) => {
+      clearedSentiments.push(callId);
+    },
     getRiskScore: () => 0.05,
     allowClientGovernanceOverrides: false,
     ensureConversation: async (input) => {
-      ensuredConversations.push({ channelSessionId: input.channelSessionId });
+      ensuredConversations.push({ channelSessionId: input.channelSessionId, customerId: input.customerId });
       return "conv_test";
+    },
+    claimAgentAction: async (input) => {
+      actionWrites.push({ status: input.status });
+      if (behavior === "replay") {
+        return {
+          claimed: false,
+          existing: {
+            status: "executed" as const,
+            policyDecision: "allow" as const,
+            result: { content: [{ text: "{\"already\":true}" }] },
+          },
+        };
+      }
+      return { claimed: true };
     },
     upsertAgentAction: async (input) => {
       actionWrites.push({ status: input.status });
@@ -74,9 +95,13 @@ const createRouter = (behavior: "allow" | "escalate" | "throw") =>
         },
       };
     },
+    ...overrides,
   });
 
-async function startServer(behavior: "allow" | "escalate" | "throw") {
+async function startServer(
+  behavior: "allow" | "escalate" | "throw" | "replay",
+  overrides: Parameters<typeof createToolCallsRouter>[0] = {},
+) {
   if (server?.listening) {
     await new Promise<void>((resolve, reject) => {
       server.close((err) => (err ? reject(err) : resolve()));
@@ -87,10 +112,11 @@ async function startServer(behavior: "allow" | "escalate" | "throw") {
   eventWrites.length = 0;
   statusWrites.length = 0;
   ensuredConversations.length = 0;
+  clearedSentiments.length = 0;
 
   const app = express();
   app.use(express.json());
-  app.use(createRouter(behavior));
+  app.use(createRouter(behavior, overrides));
 
   server = createServer(app);
   server.listen(0, "127.0.0.1");
@@ -143,6 +169,7 @@ describe("tool-calls route persistence", () => {
     assert.deepEqual(statusWrites, [
       { conversationId: "conv_test", status: "completed" },
     ]);
+    assert.deepEqual(clearedSentiments, ["call_hang"]);
   });
 
   it("persists allow decisions and returns the tool result", async () => {
@@ -179,9 +206,119 @@ describe("tool-calls route persistence", () => {
     );
     assert.equal(eventWrites.at(-1)?.kind, "tool_called");
   });
+
+  it("normalizes an external customer reference before persistence", async () => {
+    await startServer("allow", {
+      allowClientGovernanceOverrides: true,
+      resolveGovernanceContext: () => ({
+        trustLevel: 2,
+        sentiment: "neutral",
+        confidence: 0.95,
+        conversationId: undefined,
+        customerId: "cust_external_01",
+      }),
+      resolveCustomerReference: async (reference) => {
+        assert.equal(reference, "cust_external_01");
+        return "customer_doc_01";
+      },
+    });
+
+    const response = await fetch(`${baseUrl}/tool-calls`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message: {
+          type: "tool-calls",
+          call: { id: "call_identity" },
+          metadata: { customerId: "cust_external_01" },
+          toolCallList: [
+            {
+              id: "tc_identity",
+              type: "function",
+              function: {
+                name: "order_lookup",
+                arguments: { orderNumber: "ORD-1234" },
+              },
+            },
+          ],
+        },
+      }),
+    });
+
+    assert.equal(response.status, 200);
+    assert.equal(ensuredConversations[0]?.customerId, "customer_doc_01");
+  });
+
+  it("refuses tool execution when the audit session cannot be established", async () => {
+    await startServer("allow", {
+      ensureConversation: async () => {
+        throw new Error("Convex unavailable");
+      },
+      executeWithGovernance: async () => {
+        throw new Error("governance must not run");
+      },
+    });
+
+    const response = await fetch(`${baseUrl}/tool-calls`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message: {
+          type: "tool-calls",
+          call: { id: "call_no_audit" },
+          metadata: {},
+          toolCallList: [
+            {
+              id: "tc_no_audit",
+              type: "function",
+              function: {
+                name: "order_lookup",
+                arguments: { orderNumber: "ORD-1234" },
+              },
+            },
+          ],
+        },
+      }),
+    });
+
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as { results: Array<{ result: string }> };
+    assert.match(body.results[0]?.result ?? "", /safe audited session/);
+    assert.deepEqual(actionWrites, []);
+  });
 });
 
 describe("tool-calls route non-allow outcomes", () => {
+  it("replays an existing terminal action without invoking governance again", async () => {
+    await startServer("replay");
+    const response = await fetch(`${baseUrl}/tool-calls`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message: {
+          type: "tool-calls",
+          call: { id: "call_replay" },
+          metadata: {},
+          toolCallList: [
+            {
+              id: "tc_replay",
+              type: "function",
+              function: {
+                name: "order_lookup",
+                arguments: { orderNumber: "ORD-1234" },
+              },
+            },
+          ],
+        },
+      }),
+    });
+
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as { results: Array<{ result: string }> };
+    assert.equal(body.results[0]?.result, "{\"already\":true}");
+    assert.deepEqual(actionWrites.map((entry) => entry.status), ["policy_checking"]);
+  });
+
   it("persists escalations", async () => {
     await startServer("escalate");
     const response = await fetch(`${baseUrl}/tool-calls`, {

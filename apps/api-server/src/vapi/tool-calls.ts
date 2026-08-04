@@ -5,13 +5,16 @@ import { config } from "../config.js";
 import { executeWithGovernance } from "../policy/executor.js";
 import { resolveGovernanceContext } from "./governance-context.js";
 import { toMcpToolName } from "./tool-definitions.js";
-import { getSentiment } from "./sentiment.js";
+import { clearSentiment, getSentiment } from "./sentiment.js";
 import { getRiskScore } from "../policy/risk-scores.js";
 import {
   ensureConversation,
   recordConversationEvent,
   updateConversationStatus,
+  claimAgentAction,
   upsertAgentAction,
+  resolveCustomerReference,
+  type ExistingAgentAction,
 } from "../conversation-audit.js";
 
 const log = pino({ name: "vapi-tool-calls" });
@@ -41,11 +44,14 @@ interface ToolCallsDeps {
   resolveGovernanceContext: typeof resolveGovernanceContext;
   toMcpToolName: typeof toMcpToolName;
   getSentiment: typeof getSentiment;
+  clearSentiment: typeof clearSentiment;
   getRiskScore: typeof getRiskScore;
   ensureConversation: typeof ensureConversation;
   recordConversationEvent: typeof recordConversationEvent;
   updateConversationStatus: typeof updateConversationStatus;
+  claimAgentAction: typeof claimAgentAction;
   upsertAgentAction: typeof upsertAgentAction;
+  resolveCustomerReference: typeof resolveCustomerReference;
   allowClientGovernanceOverrides: boolean;
   now: () => number;
 }
@@ -55,14 +61,36 @@ const defaultDeps: ToolCallsDeps = {
   resolveGovernanceContext,
   toMcpToolName,
   getSentiment,
+  clearSentiment,
   getRiskScore,
   ensureConversation,
   recordConversationEvent,
   updateConversationStatus,
+  claimAgentAction,
   upsertAgentAction,
+  resolveCustomerReference,
   allowClientGovernanceOverrides: config.ALLOW_CLIENT_GOVERNANCE_OVERRIDES,
   now: () => Date.now(),
 };
+
+function replayExistingAction(existing: ExistingAgentAction): string {
+  if (
+    existing.result &&
+    typeof existing.result === "object" &&
+    "content" in existing.result &&
+    Array.isArray((existing.result as { content?: unknown }).content)
+  ) {
+    const text = (existing.result as { content: Array<{ text?: unknown }> }).content[0]?.text;
+    if (typeof text === "string") return text;
+  }
+
+  return JSON.stringify({
+    replayed: true,
+    status: existing.status,
+    decision: existing.policyDecision,
+    message: existing.policyReason ?? "This action is already being processed or has already completed.",
+  });
+}
 
 // ── POST /vapi/tool-calls ──
 // VAPI sends ALL webhook events to serverUrl (status-update, speech-update,
@@ -91,11 +119,22 @@ export function createToolCallsRouter(
 
       if (callId) {
         const detectedSentiment = deps.getSentiment(callId);
-        const { trustLevel, sentiment, customerId } = deps.resolveGovernanceContext({
+        const { trustLevel, sentiment, customerId: requestedCustomerId } = deps.resolveGovernanceContext({
           sessionMeta,
           detectedSentiment,
           allowClientOverrides: deps.allowClientGovernanceOverrides,
         });
+        let customerId: string | undefined;
+        if (requestedCustomerId) {
+          try {
+            customerId = await deps.resolveCustomerReference(requestedCustomerId);
+            if (!customerId) {
+              log.warn({ hasRequestedCustomerId: true }, "Customer reference could not be resolved");
+            }
+          } catch (err) {
+            log.warn({ err }, "Customer reference lookup failed");
+          }
+        }
 
         try {
           const conversationId = await deps.ensureConversation({
@@ -112,6 +151,7 @@ export function createToolCallsRouter(
 
           if (messageType === "hang" || messageType === "end-of-call-report") {
             await deps.updateConversationStatus(conversationId, "completed");
+            deps.clearSentiment(callId);
           }
         } catch (err) {
           log.warn(
@@ -152,13 +192,24 @@ export function createToolCallsRouter(
     // Prefer live-detected sentiment from cache. Metadata is only considered in explicit demo mode.
     const callId = typeof call?.id === "string" ? call.id : undefined;
     const detectedSentiment = callId ? deps.getSentiment(callId) : "neutral";
-    const { trustLevel, sentiment, confidence, conversationId, customerId } =
+    const { trustLevel, sentiment, confidence, customerId: requestedCustomerId } =
       deps.resolveGovernanceContext({
         sessionMeta,
         detectedSentiment,
         allowClientOverrides: deps.allowClientGovernanceOverrides,
       });
-    let resolvedConversationId = conversationId;
+    let customerId: string | undefined;
+    if (requestedCustomerId) {
+      try {
+        customerId = await deps.resolveCustomerReference(requestedCustomerId);
+        if (!customerId) {
+          log.warn({ hasRequestedCustomerId: true }, "Customer reference could not be resolved");
+        }
+      } catch (err) {
+        log.warn({ err }, "Customer reference lookup failed");
+      }
+    }
+    let resolvedConversationId: string | undefined;
 
     if (callId) {
       try {
@@ -174,6 +225,19 @@ export function createToolCallsRouter(
       }
     }
 
+    if (!resolvedConversationId) {
+      log.error({ callId, toolCount: toolCallList.length }, "Cannot execute tool calls without an audited conversation");
+      res.status(200).json({
+        results: toolCallList.map((toolCall) => ({
+          toolCallId: toolCall.id,
+          result: JSON.stringify({
+            error: "I could not establish a safe audited session. No action was executed.",
+          }),
+        })),
+      });
+      return;
+    }
+
     // Process each tool call through governance
     const results = await Promise.all(
       toolCallList.map(async (toolCall) => {
@@ -187,7 +251,7 @@ export function createToolCallsRouter(
             toolArgs = JSON.parse(toolCall.function.arguments);
           } catch {
             log.warn(
-              { raw: toolCall.function.arguments },
+              { argumentType: typeof toolCall.function.arguments },
               "Failed to parse tool arguments"
             );
             return {
@@ -207,7 +271,7 @@ export function createToolCallsRouter(
 
         if (resolvedConversationId) {
           try {
-            await deps.upsertAgentAction({
+            const claim = await deps.claimAgentAction({
               conversationId: resolvedConversationId,
               customerId,
               toolName,
@@ -218,11 +282,23 @@ export function createToolCallsRouter(
               sentimentAtTime: sentiment,
               idempotencyKey,
             });
+
+            if (!claim.claimed) {
+              return {
+                toolCallId: toolCall.id,
+                result: replayExistingAction(claim.existing ?? {
+                  status: "policy_checking",
+                }),
+              };
+            }
           } catch (err) {
-            log.warn(
-              { err, toolName, toolCallId: toolCall.id },
-              "Failed to persist policy-checking action"
-            );
+            log.error({ err, toolName, toolCallId: toolCall.id }, "Failed to claim idempotency key");
+            return {
+              toolCallId: toolCall.id,
+              result: JSON.stringify({
+                error: "I could not safely reserve that action. Please retry once the session is stable.",
+              }),
+            };
           }
         }
 

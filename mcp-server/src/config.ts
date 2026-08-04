@@ -8,11 +8,15 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: resolve(__dirname, "../../.env") });
 
 const EnvSchema = z.object({
+  APP_ENV: z.enum(["development", "test", "production"]).default("development"),
   MCP_PORT: z.coerce.number().default(3001),
   MCP_AUTH_TOKEN: z.string().min(1),
   CONVEX_URL: z.string().url(),
   MINIMAX_API_KEY: z.string().min(1),
   MINIMAX_BASE_URL: z.string().url().default("https://api.minimax.io/v1"),
+  RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60_000),
+  RATE_LIMIT_MAX_REQUESTS: z.coerce.number().int().positive().default(120),
+  PROVIDER_TIMEOUT_MS: z.coerce.number().int().positive().default(8_000),
 });
 
 function loadConfig() {

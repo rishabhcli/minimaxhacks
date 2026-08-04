@@ -25,6 +25,8 @@ import crypto from "node:crypto";
 
 const RTRVR_API_KEY = process.env.RTRVR_API_KEY;
 const CONVEX_URL = process.env.CONVEX_URL;
+const MINIMAX_API_KEY = process.env.MINIMAX_API_KEY;
+const MINIMAX_BASE_URL = process.env.MINIMAX_BASE_URL ?? "https://api.minimax.io/v1";
 
 if (!RTRVR_API_KEY) {
   console.error("Missing RTRVR_API_KEY environment variable");
@@ -32,6 +34,10 @@ if (!RTRVR_API_KEY) {
 }
 if (!CONVEX_URL) {
   console.error("Missing CONVEX_URL environment variable");
+  process.exit(1);
+}
+if (!MINIMAX_API_KEY) {
+  console.error("Missing MINIMAX_API_KEY environment variable; knowledge ingestion requires real embo-01 embeddings");
   process.exit(1);
 }
 
@@ -149,13 +155,33 @@ async function upsertDocument(doc: {
   content: string;
   contentHash: string;
 }): Promise<void> {
+  const embedding = await createEmbedding(doc.content);
   await convex.mutation(api.knowledgeDocuments.upsert, {
     title: doc.title,
     url: doc.url,
     category: doc.category,
     content: doc.content,
     contentHash: doc.contentHash,
+    embedding,
   });
+}
+
+async function createEmbedding(input: string): Promise<number[]> {
+  const response = await fetch(`${MINIMAX_BASE_URL}/embeddings`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${MINIMAX_API_KEY}`,
+    },
+    body: JSON.stringify({ model: "embo-01", input: [input], type: "db" }),
+  });
+  if (!response.ok) throw new Error(`MiniMax embeddings returned HTTP ${response.status}`);
+  const payload = (await response.json()) as { data?: Array<{ embedding?: number[] }> };
+  const embedding = payload.data?.[0]?.embedding;
+  if (!embedding || embedding.length !== 1536) {
+    throw new Error("MiniMax returned an invalid embo-01 embedding");
+  }
+  return embedding;
 }
 
 // ── Main ──

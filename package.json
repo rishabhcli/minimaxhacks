@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "engines": {
-    "node": ">=20 <21"
+    "node": ">=20.9 <21"
   },
   "workspaces": [
     "packages/shared",
@@ -16,16 +16,18 @@
   "scripts": {
     "bootstrap": "npm ci",
     "build": "npm run build --workspaces --if-present",
-    "test": "npm run test --workspace=apps/api-server",
-    "typecheck": "npm run typecheck --workspace=apps/api-server && npm run typecheck --workspace=mcp-server && npm run typecheck --workspace=packages/shared && npx tsc --noEmit -p apps/dashboard/tsconfig.json && npx tsc --noEmit --module NodeNext --moduleResolution NodeNext --target ES2022 --lib ES2022,DOM --types node eval/run-eval.ts",
+    "test": "npm run test --workspace=apps/api-server && npm run test --workspace=mcp-server",
+    "typecheck": "npm run typecheck --workspace=apps/api-server && npm run typecheck --workspace=mcp-server && npm run typecheck --workspace=packages/shared && npx tsc --noEmit -p apps/dashboard/tsconfig.json && npx tsc --noEmit --module NodeNext --moduleResolution NodeNext --target ES2022 --lib ES2022,DOM --types node eval/run-eval.ts && npm run typecheck:scripts",
     "verify": "npm run build && npm run test && npm run typecheck && npm run eval",
     "dev:api": "npm run dev --workspace=apps/api-server",
     "dev:dashboard": "npm run dev --workspace=apps/dashboard",
     "dev:mcp": "npm run dev --workspace=mcp-server",
     "dev:convex": "cd convex && npx convex dev",
     "eval": "npm run eval --workspace=eval",
+    "reset-demo": "npx tsx scripts/reset-demo.ts",
     "seed": "npx tsx scripts/seed-data.ts",
-    "scrape-knowledge": "npx tsx scripts/scrape-knowledge.ts"
+    "scrape-knowledge": "npx tsx scripts/scrape-knowledge.ts",
+    "typecheck:scripts": "npx tsc --noEmit --module ESNext --moduleResolution Bundler --target ES2022 --lib ES2022,DOM --types node scripts/*.ts"
   },
   "devDependencies": {
     "typescript": "^5.4.0"

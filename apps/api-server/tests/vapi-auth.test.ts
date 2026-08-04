@@ -34,6 +34,26 @@ after(async () => {
 });
 
 describe("Vapi route authentication", () => {
+  it("returns a traceable request id from health", async () => {
+    const response = await fetch(`${baseUrl}/health`, {
+      headers: { "X-Request-Id": "health-check.1" },
+    });
+
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("x-request-id"), "health-check.1");
+    const body = (await response.json()) as {
+      requestId?: string;
+      readiness?: string;
+      degraded?: string[];
+      configuration?: { vapiWebhookAuth?: boolean; speechmatics?: boolean };
+    };
+    assert.equal(body.requestId, "health-check.1");
+    assert.equal(body.configuration?.vapiWebhookAuth, true);
+    assert.equal(body.configuration?.speechmatics, false);
+    assert.equal(body.readiness, "degraded");
+    assert.ok(body.degraded?.includes("speechmatics"));
+  });
+
   it("rejects unauthenticated tool-call requests when a webhook secret is configured", async () => {
     const response = await fetch(`${baseUrl}/vapi/tool-calls`, {
       method: "POST",
@@ -67,5 +87,23 @@ describe("Vapi route authentication", () => {
     });
 
     assert.equal(response.status, 200);
+  });
+
+  it("rejects bearer tokens with extra fields", async () => {
+    const response = await fetch(`${baseUrl}/vapi/tool-calls`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer test-vapi-secret extra",
+      },
+      body: JSON.stringify({
+        message: {
+          type: "status-update",
+          metadata: {},
+        },
+      }),
+    });
+
+    assert.equal(response.status, 401);
   });
 });

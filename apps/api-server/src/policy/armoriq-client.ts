@@ -9,6 +9,7 @@ import {
   type IntentToken,
   type ArmorIqResult,
 } from "@shielddesk/shared";
+import { fetchWithProviderPolicy } from "../provider-http.js";
 
 const log = pino({ name: "armoriq-client" });
 
@@ -27,20 +28,24 @@ async function armoriqFetch(
   path: string,
   body: Record<string, unknown>
 ): Promise<unknown> {
-  const res = await fetch(`${ARMORIQ_BASE_URL}${path}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${config.ARMORIQ_API_KEY}`,
-      "X-ArmorIQ-User-ID": config.ARMORIQ_USER_ID,
-      "X-ArmorIQ-Agent-ID": config.ARMORIQ_AGENT_ID,
+  const res = await fetchWithProviderPolicy(
+    `${ARMORIQ_BASE_URL}${path}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.ARMORIQ_API_KEY}`,
+        "X-ArmorIQ-User-ID": config.ARMORIQ_USER_ID,
+        "X-ArmorIQ-Agent-ID": config.ARMORIQ_AGENT_ID,
+      },
+      body: JSON.stringify(body),
     },
-    body: JSON.stringify(body),
-  });
+    { timeoutMs: config.PROVIDER_TIMEOUT_MS, maxAttempts: 1 },
+  );
 
   if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`ArmorIQ ${path} returned ${res.status}: ${errText}`);
+    await res.body?.cancel().catch(() => undefined);
+    throw new Error(`ArmorIQ ${path} returned ${res.status}`);
   }
 
   return res.json();
@@ -101,7 +106,8 @@ export async function invoke(
   mcpServerUrl: string,
   action: string,
   intentToken: IntentToken,
-  params?: Record<string, unknown>
+  params?: Record<string, unknown>,
+  context?: { customerId?: string; conversationId?: string },
 ): Promise<ArmorIqResult> {
   log.info(
     { action, tokenId: intentToken.tokenId },
@@ -117,6 +123,7 @@ export async function invoke(
       expiresAt: intentToken.expiresAt,
     },
     params,
+    context,
   });
 
   return ArmorIqResultSchema.parse(raw);

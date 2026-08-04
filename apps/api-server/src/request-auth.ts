@@ -10,9 +10,9 @@ function timingSafeEqualString(a: string, b: string): boolean {
 
 function parseBearerToken(headerValue: string | undefined): string | null {
   if (!headerValue) return null;
-  const [scheme, token] = headerValue.split(" ");
-  if (scheme?.toLowerCase() !== "bearer" || !token) return null;
-  return token;
+  const parts = headerValue.trim().split(/\s+/);
+  if (parts.length !== 2 || parts[0]?.toLowerCase() !== "bearer" || !parts[1]) return null;
+  return parts[1];
 }
 
 export function isAuthorizedVapiRequest(

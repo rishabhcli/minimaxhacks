@@ -1,251 +1,229 @@
 "use client";
 
-import { useQuery } from "convex/react";
-import { api } from "@/lib/api";
+import Link from "next/link";
 import { useParams } from "next/navigation";
+import {
+  ArrowLeft,
+  CheckCircle2,
+  CircleAlert,
+  Clock3,
+  LockKeyhole,
+  MessageSquare,
+  Phone,
+  Radio,
+  ShieldCheck,
+} from "lucide-react";
+import { PolicySurface } from "@/components/PolicySurface";
+import { ConversationDetailProvider, useConversationDetailData, type DashboardAction, type DashboardEvent } from "@/lib/dashboard-data";
 
-// Types for Convex documents (anyApi returns untyped results)
-interface Transcript {
-  _id: string;
-  speaker: string;
-  text: string;
-  isFinal: boolean;
-  ts: number;
+function formatDate(timestamp: number) {
+  return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(timestamp);
 }
 
-interface AgentAction {
-  _id: string;
-  toolName: string;
-  policyDecision?: string;
-  policyReason?: string;
-  confidence?: number;
-  riskScore?: number;
-  effectiveThreshold?: number;
-  armoriqVerified?: boolean;
-  status: string;
-  ts: number;
+function formatDuration(startedAt: number, endedAt?: number) {
+  const duration = Math.max(0, (endedAt ?? startedAt + 4 * 60 * 1000) - startedAt);
+  const minutes = Math.floor(duration / 60000);
+  const seconds = Math.floor((duration % 60000) / 1000);
+  return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
 }
 
-interface ConversationEvent {
-  _id: string;
-  kind: string;
-  actorKind: string;
-  payload: unknown;
-  ts: number;
+function actionDecision(action: DashboardAction) {
+  if (action.status === "planned" || action.status === "policy_checking" || action.status === "executing") return "pending";
+  if (action.policyDecision) return action.policyDecision;
+  if (action.status === "failed" || action.status === "blocked") return "deny";
+  if (action.status === "escalated") return "escalate";
+  return "allow";
 }
 
-export default function ConversationDetailPage() {
-  const params = useParams();
-  const id = params.id as string;
+const SENSITIVE_KEY = /email|phone|token|secret|password|authorization|address/i;
 
-  const conversation = useQuery(api.conversations.getById, { id });
-  const transcripts = useQuery(api.transcripts.byConversation, { conversationId: id }) as Transcript[] | undefined;
-  const actions = useQuery(api.agentActions.byConversation, { conversationId: id }) as AgentAction[] | undefined;
-  const events = useQuery(api.conversationEvents.byConversation, { conversationId: id }) as ConversationEvent[] | undefined;
+function redactForDisplay(value: unknown, key = ""): unknown {
+  if (SENSITIVE_KEY.test(key)) return "[redacted]";
+  if (typeof value === "string") return value.length > 120 ? `${value.slice(0, 117)}…` : value;
+  if (Array.isArray(value)) return value.map((entry) => redactForDisplay(entry));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([entryKey, entryValue]) => [entryKey, redactForDisplay(entryValue, entryKey)]));
+  }
+  return value;
+}
 
-  if (conversation === undefined) {
-    return <p style={{ color: "var(--text-muted)" }}>Loading...</p>;
+function formatAuditPayload(value: unknown) {
+  try {
+    return JSON.stringify(redactForDisplay(value));
+  } catch {
+    return "[unavailable]";
+  }
+}
+
+function eventCopy(event: DashboardEvent) {
+  const payload = event.payload ?? {};
+  const tool = typeof payload.toolName === "string" ? payload.toolName : "tool action";
+  switch (event.kind) {
+    case "trust_resolved":
+      return `Trust level ${String(payload.trustLevel ?? "resolved")} attached to this session.`;
+    case "tool_called":
+      return `${tool} cleared policy and executed.`;
+    case "tool_escalated":
+      return `${tool} paused for human review.`;
+    case "tool_blocked":
+      return `${tool} was blocked before execution.`;
+    case "tool_failed":
+      return `${tool} failed without bypassing policy.`;
+    case "sentiment_changed":
+      return `Sentiment moved to ${String(payload.current ?? "updated")}.`;
+    case "summary_generated":
+      return "Post-call summary generated.";
+    case "channel_event":
+      return `Channel event: ${String(payload.messageType ?? "updated")}.`;
+    default:
+      return typeof payload.text === "string" ? payload.text : "Conversation event recorded.";
+  }
+}
+
+function EventDot({ event }: { event: DashboardEvent }) {
+  const tone = event.kind === "tool_escalated" ? "warning" : event.kind === "tool_blocked" || event.kind === "tool_failed" ? "danger" : "";
+  return <span className={`timeline-dot ${tone}`} />;
+}
+
+function ActionRow({ action, preview }: { action: DashboardAction; preview: boolean }) {
+  const decision = actionDecision(action);
+  return (
+    <div className="action-row">
+      <div className="action-heading">
+        <span className="action-tool">{action.toolName}</span>
+        <span className={`badge ${decision}`}>{decision}</span>
+      </div>
+      <div className="action-meta">
+        <span className="badge">confidence {action.confidence?.toFixed(2) ?? "—"}</span>
+        <span className="badge">risk {action.riskScore?.toFixed(2) ?? "—"}</span>
+        <span className="badge">threshold {action.effectiveThreshold?.toFixed(3) ?? "—"}</span>
+        {action.status && <span className="badge neutral">{action.status.replace("_", " ")}</span>}
+      </div>
+      {action.policyReason && <p className="action-reason">{action.policyReason}</p>}
+      {action.toolArgs && <div className="action-payload"><span className="action-payload-label">Arguments</span><code>{formatAuditPayload(action.toolArgs)}</code></div>}
+      {action.result !== undefined && <div className="action-payload"><span className="action-payload-label">Result</span><code>{formatAuditPayload(action.result)}</code></div>}
+      {action.armoriqVerified && !preview && (
+        <div className="action-proof"><LockKeyhole size={13} /> Cryptographic proof verified · {action.armoriqTokenId ?? "token attached"}</div>
+      )}
+      {action.armoriqVerified && preview && (
+        <div className="action-proof" style={{ color: "var(--orange)" }}><LockKeyhole size={13} /> Preview record · ArmorIQ proof is illustrative only.</div>
+      )}
+      {!action.armoriqVerified && decision === "allow" && <div className="action-proof" style={{ color: "var(--orange)" }}><CircleAlert size={13} /> Policy allowed; external proof not configured for this action.</div>}
+    </div>
+  );
+}
+
+function ConversationDetailContent() {
+  const { dataSource, isLoading, conversation, customer, transcripts, actions, events } = useConversationDetailData();
+
+  if (isLoading) {
+    return <div className="loading-state"><div className="skeleton" style={{ width: "34%", margin: "0 auto" }} /><p>Loading conversation state…</p></div>;
   }
 
-  if (conversation === null) {
-    return <p style={{ color: "var(--red)" }}>Conversation not found.</p>;
+  if (!conversation) {
+    return <div className="panel not-found"><div><CircleAlert size={25} color="var(--orange)" /><strong>Conversation not found</strong><p>This session may have been removed or the link is incomplete.</p><Link className="text-link" href="/" style={{ marginTop: 16 }}>Back to overview <ArrowLeft size={13} /></Link></div></div>;
   }
+
+  const isActive = conversation.status === "active";
+  const customerName = customer?.displayName ?? "Unidentified caller";
+  const channelLabel = conversation.channelType === "vapi_web" ? "Web voice" : "Phone";
 
   return (
     <div>
-      <a href="/" style={{ fontSize: "0.875rem", color: "var(--text-muted)", marginBottom: "1rem", display: "inline-block" }}>
-        &larr; Back to conversations
-      </a>
-
-      {/* Panel 1: Conversation Card */}
-      <div className="card" style={{ marginBottom: "1.5rem" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <div>
-            <h2 style={{ fontSize: "1.25rem", fontWeight: 700, marginBottom: "0.5rem" }}>
-              Conversation
-            </h2>
-            <div style={{ display: "flex", gap: "0.75rem", alignItems: "center" }}>
-              <span className={`badge ${conversation.channelType === "vapi_web" ? "badge-vapi" : "badge-plivo"}`}>
-                {conversation.channelType === "vapi_web" ? "Web (VAPI)" : "Phone (Plivo)"}
-              </span>
-              <span className={`badge ${conversation.status === "active" ? "badge-active" : "badge-completed"}`}>
-                {conversation.status}
-              </span>
-              <span className="badge" style={{ background: "rgba(99,102,241,0.1)", color: "var(--accent)" }}>
-                Trust Level {conversation.trustLevel}
-              </span>
-              {conversation.sentimentScore && (
-                <span className="badge" style={{ background: "rgba(234,179,8,0.1)", color: "var(--yellow)" }}>
-                  {conversation.sentimentScore}
-                </span>
-              )}
-            </div>
+      <div className="detail-header">
+        <Link className="back-link" href="/"><ArrowLeft size={14} /> Back to command center</Link>
+        <div className="detail-title-row">
+          <div className="detail-title-group">
+            <div className="eyebrow">Conversation review / {conversation.channelSessionId.slice(0, 18)}</div>
+            <h1 className="detail-title">{customerName}</h1>
+            <p className="detail-subtitle">{channelLabel} · started {formatDate(conversation.startedAt)} · duration {formatDuration(conversation.startedAt, conversation.endedAt)}</p>
           </div>
-          <div style={{ textAlign: "right", fontSize: "0.75rem", color: "var(--text-muted)" }}>
-            <div>Started: {new Date(conversation.startedAt).toLocaleString()}</div>
-            {conversation.endedAt && (
-              <div>Ended: {new Date(conversation.endedAt).toLocaleString()}</div>
-            )}
-            <div>Session: {String(conversation.channelSessionId).slice(0, 12)}...</div>
+          <div className="detail-badges">
+            <span className={`badge ${isActive ? "active" : "completed"}`}><span className="status-dot" /> {conversation.status}</span>
+            <span className="badge channel-web">Trust {conversation.trustLevel}</span>
+            {conversation.sentimentScore && <span className="badge warning">{conversation.sentimentScore}</span>}
           </div>
         </div>
       </div>
 
-      <div className="grid-2">
-        {/* Panel 2: Live Transcript */}
-        <div className="card" style={{ maxHeight: "500px", overflow: "auto" }}>
-          <h3 style={{ fontSize: "1rem", fontWeight: 600, marginBottom: "0.75rem" }}>
-            Transcript
-          </h3>
-          {transcripts === undefined && <p style={{ color: "var(--text-muted)" }}>Loading...</p>}
-          {transcripts && transcripts.length === 0 && (
-            <p style={{ color: "var(--text-muted)", fontSize: "0.875rem" }}>No transcript yet.</p>
-          )}
-          {transcripts?.map((t: Transcript) => (
-            <div key={t._id} className="transcript-line">
-              <span
-                className="transcript-speaker"
-                style={{ color: t.speaker === "customer" ? "var(--blue)" : "var(--green)" }}
-              >
-                {t.speaker === "customer" ? "Customer" : "Agent"}
-              </span>
-              <span style={{ fontSize: "0.875rem" }}>{t.text}</span>
+      {dataSource === "preview" && (
+        <div className="data-notice" style={{ marginBottom: 16 }}>
+          <CircleAlert size={15} />
+          <span><strong>Local preview session.</strong> Live transcript and audit records appear here once Convex is connected.</span>
+        </div>
+      )}
+
+      <div className="detail-grid">
+        <div className="detail-main">
+          <section className="panel transcript-panel">
+            <div className="panel-header">
+              <div><h2 className="panel-title">Transcript</h2><p className="panel-subtitle">Conversation messages, ordered oldest first</p></div>
+              <MessageSquare size={17} color="var(--sky)" />
             </div>
-          ))}
+            {transcripts.length ? (
+              <div className="transcript-list">
+                {transcripts.map((transcript) => (
+                  <div className={`transcript-line ${transcript.speaker}`} key={transcript._id}>
+                    <span className="transcript-speaker">{transcript.speaker}</span>
+                    <span className="transcript-text">{transcript.text}</span>
+                  </div>
+                ))}
+              </div>
+            ) : <div className="empty-state"><MessageSquare size={22} color="var(--faint)" /><strong>No transcript captured</strong><p>Messages will stream into this review as the call progresses.</p></div>}
+          </section>
+
+          <section className="panel action-panel">
+            <div className="panel-header">
+              <div><h2 className="panel-title">Governed actions</h2><p className="panel-subtitle">Every attempted tool call with its evidence</p></div>
+              <ShieldCheck size={17} color="var(--mint)" />
+            </div>
+            {actions.length ? <div className="action-list">{actions.map((action) => <ActionRow action={action} preview={dataSource === "preview"} key={action._id} />)}</div> : <div className="empty-state"><ShieldCheck size={22} color="var(--faint)" /><strong>No tool calls yet</strong><p>Low-risk lookups and higher-impact requests will be logged here.</p></div>}
+          </section>
         </div>
 
-        {/* Panel 3: Agent Actions (governance decisions) */}
-        <div className="card" style={{ maxHeight: "500px", overflow: "auto" }}>
-          <h3 style={{ fontSize: "1rem", fontWeight: 600, marginBottom: "0.75rem" }}>
-            Agent Actions
-          </h3>
-          {actions === undefined && <p style={{ color: "var(--text-muted)" }}>Loading...</p>}
-          {actions && actions.length === 0 && (
-            <p style={{ color: "var(--text-muted)", fontSize: "0.875rem" }}>No actions yet.</p>
-          )}
-          {actions?.map((a: AgentAction) => (
-            <div key={a._id} className="action-row">
-              <div>
-                <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.25rem" }}>
-                  <span style={{ fontWeight: 600, fontSize: "0.875rem" }}>{a.toolName}</span>
-                  {a.policyDecision && (
-                    <span className={`badge badge-${a.policyDecision}`}>
-                      {a.policyDecision.toUpperCase()}
-                    </span>
-                  )}
-                  {a.armoriqVerified && (
-                    <span className="badge" style={{ background: "rgba(34,197,94,0.1)", color: "var(--green)" }}>
-                      Verified
-                    </span>
-                  )}
-                </div>
-                <div style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
-                  {a.policyReason}
-                </div>
-              </div>
-              <div style={{ textAlign: "right", fontSize: "0.75rem", color: "var(--text-muted)" }}>
-                <div>Conf: {a.confidence?.toFixed(2) ?? "\u2014"}</div>
-                <div>Risk: {a.riskScore?.toFixed(2) ?? "\u2014"}</div>
-                <div>Thresh: {a.effectiveThreshold?.toFixed(3) ?? "\u2014"}</div>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
+        <div className="detail-side">
+          <PolicySurface trustLevel={conversation.trustLevel} sentiment={conversation.sentimentScore ?? "neutral"} actions={actions} />
 
-      {/* Panel 4: Conversation Events Timeline */}
-      <div className="card" style={{ marginTop: "1.5rem" }}>
-        <h3 style={{ fontSize: "1rem", fontWeight: 600, marginBottom: "0.75rem" }}>
-          Timeline
-        </h3>
-        {events === undefined && <p style={{ color: "var(--text-muted)" }}>Loading...</p>}
-        {events && events.length === 0 && (
-          <p style={{ color: "var(--text-muted)", fontSize: "0.875rem" }}>No events yet.</p>
-        )}
-        {events?.map((e: ConversationEvent) => (
-          <div key={e._id} className="timeline-item">
-            <div style={{ minWidth: "6rem" }}>
-              <span className={`badge ${getBadgeClass(e.kind)}`}>
-                {formatKind(e.kind)}
-              </span>
+          <section className="panel timeline-panel">
+            <div className="panel-header">
+              <div><h2 className="panel-title">Audit timeline</h2><p className="panel-subtitle">System events for this session</p></div>
+              <Clock3 size={17} color="var(--orange)" />
             </div>
-            <div style={{ flex: 1 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-                <span style={{ fontSize: "0.75rem", fontWeight: 600, color: "var(--text-muted)" }}>
-                  {e.actorKind}
-                </span>
-                <span style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
-                  {new Date(e.ts).toLocaleTimeString()}
-                </span>
+            {events.length ? (
+              <div className="timeline-list">
+                {events.map((event) => (
+                  <div className="timeline-entry" key={event._id}>
+                    <EventDot event={event} />
+                    <div>
+                      <div className="timeline-kind">{event.kind.replaceAll("_", " ")}</div>
+                      <div className="timeline-copy">{eventCopy(event)}</div>
+                      <div className="timeline-time">{formatDate(event.ts)} · {event.actorKind}</div>
+                    </div>
+                  </div>
+                ))}
               </div>
-              <div style={{ fontSize: "0.875rem", marginTop: "0.25rem" }}>
-                {renderEventPayload(e)}
-              </div>
+            ) : <div className="empty-state"><Clock3 size={22} color="var(--faint)" /><strong>No audit events yet</strong><p>Session events will appear as the call is processed.</p></div>}
+          </section>
+
+          <section className="panel">
+            <div className="panel-header">
+              <div><h2 className="panel-title">Session context</h2><p className="panel-subtitle">Identity and channel details</p></div>
+              {conversation.channelType === "vapi_web" ? <Radio size={17} color="var(--sky)" /> : <Phone size={17} color="var(--acid)" />}
             </div>
-          </div>
-        ))}
+            <div className="guardrail-list">
+              <div className="guardrail-row"><span>Customer</span><strong style={{ marginLeft: "auto", color: "var(--ink-soft)", fontSize: 11 }}>{customerName}</strong></div>
+              <div className="guardrail-row"><span>Account tier</span><strong style={{ marginLeft: "auto", color: "var(--ink-soft)", fontSize: 11 }}>{customer?.tier ?? "unresolved"}</strong></div>
+              <div className="guardrail-row"><span>Session ID</span><strong style={{ marginLeft: "auto", color: "var(--faint)", fontFamily: "SFMono-Regular, Consolas, monospace", fontSize: 10 }}>{conversation.channelSessionId.slice(0, 14)}…</strong></div>
+            </div>
+          </section>
+        </div>
       </div>
     </div>
   );
 }
 
-function getBadgeClass(kind: string): string {
-  switch (kind) {
-    case "tool_called": return "badge-allow";
-    case "tool_blocked": return "badge-deny";
-    case "tool_escalated": return "badge-escalate";
-    case "tool_failed": return "badge-deny";
-    case "message": return "badge-active";
-    default: return "badge-completed";
-  }
-}
-
-function formatKind(kind: string): string {
-  return kind.replace(/_/g, " ");
-}
-
-function renderEventPayload(event: ConversationEvent): string {
-  const payload =
-    typeof event.payload === "object" && event.payload !== null
-      ? (event.payload as Record<string, unknown>)
-      : null;
-
-  if (!payload) {
-    return String(event.payload ?? "");
-  }
-
-  switch (event.kind) {
-    case "message":
-      return typeof payload.text === "string" ? payload.text : JSON.stringify(payload);
-    case "tool_called":
-      return formatToolEvent(
-        payload.toolName,
-        payload.reason,
-        payload.verified === true ? "verified" : null
-      );
-    case "tool_blocked":
-      return formatToolEvent(payload.toolName, payload.reason, "blocked");
-    case "tool_escalated":
-      return formatToolEvent(payload.toolName, payload.reason, "escalated");
-    case "tool_failed":
-      return formatToolEvent(payload.toolName, payload.error, "failed");
-    case "sentiment_changed":
-      return `Sentiment changed from ${String(payload.previous ?? "unknown")} to ${String(payload.current ?? "unknown")}`;
-    case "trust_resolved":
-      return `Trust resolved to level ${String(payload.trustLevel ?? "?")}`;
-    case "channel_event":
-      return `Channel event: ${String(payload.messageType ?? "unknown")}`;
-    default:
-      return JSON.stringify(payload);
-  }
-}
-
-function formatToolEvent(
-  toolName: unknown,
-  detail: unknown,
-  suffix: string | null
-): string {
-  const base = typeof toolName === "string" ? toolName : "tool";
-  const tail = typeof detail === "string" && detail.trim() ? `: ${detail}` : "";
-  return suffix ? `${base} ${suffix}${tail}` : `${base}${tail}`;
+export default function ConversationDetailPage() {
+  const params = useParams();
+  const id = String(params.id ?? "");
+  return <ConversationDetailProvider id={id}><ConversationDetailContent /></ConversationDetailProvider>;
 }

@@ -148,6 +148,7 @@ describe("chat-completions route persistence", () => {
 
   it("persists sentiment changes when analysis differs from cached sentiment", async () => {
     const sentimentCache = new Map<string, string>([["call_sentiment", "neutral"]]);
+    const ordering: string[] = [];
     const sentimentUpdates: Array<{
       conversationId: string;
       previous: string;
@@ -162,14 +163,22 @@ describe("chat-completions route persistence", () => {
       setSentiment: (callId, sentiment) => {
         sentimentCache.set(callId, sentiment);
       },
-      analyzeSentiment: async () => "frustrated",
-      ensureConversation: async () => "conv_sentiment",
+      analyzeSentiment: async () => {
+        ordering.push("analyze");
+        return "frustrated";
+      },
+      ensureConversation: async ({ sentimentScore }) => {
+        ordering.push(`ensure:${sentimentScore}`);
+        return "conv_sentiment";
+      },
       recordMessage: async () => undefined,
       updateConversationSentiment: async (conversationId, previous, current) => {
+        ordering.push("persist-sentiment");
         sentimentUpdates.push({ conversationId, previous, current });
       },
-      fetchImpl: async () =>
-        new Response(
+      fetchImpl: async () => {
+        ordering.push("llm");
+        return new Response(
           JSON.stringify({
             choices: [
               {
@@ -182,7 +191,8 @@ describe("chat-completions route persistence", () => {
             status: 200,
             headers: { "Content-Type": "application/json" },
           }
-        ),
+        );
+      },
     });
 
     const response = await fetch(`${baseUrl}/chat/completions`, {
@@ -206,5 +216,89 @@ describe("chat-completions route persistence", () => {
       },
     ]);
     assert.equal(sentimentCache.get("call_sentiment"), "frustrated");
+    assert.deepEqual(ordering, [
+      "analyze",
+      "ensure:frustrated",
+      "persist-sentiment",
+      "llm",
+    ]);
+  });
+
+  it("preserves cached sentiment when the classifier is unavailable", async () => {
+    let ensuredSentiment: string | undefined;
+
+    await startServer({
+      getSentiment: () => "calm",
+      analyzeSentiment: async () => undefined,
+      ensureConversation: async ({ sentimentScore }) => {
+        ensuredSentiment = sentimentScore;
+        return "conv_cached_sentiment";
+      },
+      recordMessage: async () => undefined,
+      searchKnowledge: async () => [],
+      fetchImpl: async () =>
+        new Response(
+          JSON.stringify({
+            choices: [{ message: { role: "assistant", content: "I can help." } }],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+    });
+
+    const response = await fetch(`${baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        stream: false,
+        call: { id: "call_cached_sentiment" },
+        messages: [{ role: "user", content: "Can you help with this?" }],
+      }),
+    });
+
+    assert.equal(response.status, 200);
+    assert.equal(ensuredSentiment, "calm");
+  });
+
+  it("passes retrieved knowledge to MiniMax as evidence context", async () => {
+    let requestBody: { messages?: Array<{ role: string; content: string }> } | undefined;
+
+    await startServer({
+      ensureConversation: async () => "conv_knowledge",
+      recordMessage: async () => undefined,
+      analyzeSentiment: async () => "neutral",
+      searchKnowledge: async () => [
+        {
+          title: "Return Policy",
+          content: "Electronics can be returned within 15 days in original packaging.",
+          sourceUrl: "https://shielddesk.example.com/help/returns",
+          score: 0.91,
+        },
+      ],
+      fetchImpl: async (_url, init) => {
+        requestBody = JSON.parse(String(init?.body)) as typeof requestBody;
+        return new Response(
+          JSON.stringify({
+            choices: [{ message: { role: "assistant", content: "I found the return policy." } }],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      },
+    });
+
+    const response = await fetch(`${baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        stream: false,
+        call: { id: "call_knowledge" },
+        metadata: {},
+        messages: [{ role: "user", content: "What is the return policy?" }],
+      }),
+    });
+
+    assert.equal(response.status, 200);
+    const knowledgeMessage = requestBody?.messages?.find((message) => message.content.includes("Return Policy"));
+    assert.equal(knowledgeMessage?.role, "system");
+    assert.match(knowledgeMessage?.content ?? "", /original packaging/);
   });
 });

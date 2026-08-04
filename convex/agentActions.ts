@@ -22,6 +22,13 @@ export const byConversation = query({
   },
 });
 
+/** Recent decisions for the operations overview. */
+export const recent = query({
+  handler: async (ctx) => {
+    return await ctx.db.query("agentActions").order("desc").take(100);
+  },
+});
+
 export const byIdempotencyKey = query({
   args: { idempotencyKey: v.string() },
   handler: async (ctx, args) => {
@@ -31,6 +38,37 @@ export const byIdempotencyKey = query({
         q.eq("idempotencyKey", args.idempotencyKey)
       )
       .first();
+  },
+});
+
+/** Atomically reserve a VAPI tool call before any governed execution starts. */
+export const claimByIdempotencyKey = mutation({
+  args: {
+    conversationId: v.optional(v.id("conversations")),
+    customerId: v.optional(v.id("customers")),
+    toolName: v.string(),
+    toolArgs: v.any(),
+    confidence: v.optional(v.number()),
+    riskScore: v.optional(v.number()),
+    sentimentAtTime: v.optional(v.string()),
+    idempotencyKey: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("agentActions")
+      .withIndex("by_idempotency_key", (q) =>
+        q.eq("idempotencyKey", args.idempotencyKey)
+      )
+      .first();
+
+    if (existing) return { claimed: false, existing };
+
+    const actionId = await ctx.db.insert("agentActions", {
+      ...args,
+      status: "policy_checking",
+      ts: Date.now(),
+    });
+    return { claimed: true, actionId };
   },
 });
 

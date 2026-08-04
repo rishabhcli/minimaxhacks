@@ -2,6 +2,7 @@ import { z } from "zod";
 import { convex } from "../convex-client.js";
 import { anyApi } from "convex/server";
 import { config } from "../config.js";
+import { fetchWithProviderPolicy } from "../provider-http.js";
 
 // Use anyApi for Convex calls — avoids dependency on codegen.
 // Type safety is enforced by Zod at the tool boundary.
@@ -57,25 +58,45 @@ const AccountDeleteInput = z.object({
 
 export type ToolResult = { content: Array<{ type: "text"; text: string }> };
 
+export interface ToolExecutionContext {
+  customerId?: string;
+  conversationId?: string;
+}
+
+function requireVerifiedCustomer(
+  context: ToolExecutionContext,
+  requestedCustomerId: string | undefined,
+  toolName: string,
+): string {
+  if (!context.customerId) {
+    throw new Error(`${toolName} requires a verified customer context`);
+  }
+  if (requestedCustomerId && requestedCustomerId !== context.customerId) {
+    throw new Error(`${toolName} customer scope does not match the verified session`);
+  }
+  return context.customerId;
+}
+
 export async function executeToolCall(
   toolName: string,
-  args: Record<string, unknown>
+  args: Record<string, unknown>,
+  context: ToolExecutionContext = {},
 ): Promise<ToolResult> {
   switch (toolName) {
     case "faq.search":
       return handleFaqSearch(args);
     case "order.lookup":
-      return handleOrderLookup(args);
+      return handleOrderLookup(args, context);
     case "account.lookup":
-      return handleAccountLookup(args);
+      return handleAccountLookup(args, context);
     case "ticket.create":
-      return handleTicketCreate(args);
+      return handleTicketCreate(args, context);
     case "ticket.escalate":
-      return handleTicketEscalate(args);
+      return handleTicketEscalate(args, context);
     case "account.update":
-      return handleAccountUpdate(args);
+      return handleAccountUpdate(args, context);
     case "order.refund":
-      return handleOrderRefund(args);
+      return handleOrderRefund(args, context);
     case "account.delete":
       return handleAccountDelete(args);
     default:
@@ -87,6 +108,18 @@ function textResult(text: string): ToolResult {
   return { content: [{ type: "text", text }] };
 }
 
+async function resolveCustomerDocumentId(reference: string): Promise<string> {
+  const customer = (await convex.query(api.customers.getByReference, {
+    reference,
+  })) as { _id: string } | null;
+
+  if (!customer) {
+    throw new Error("Verified customer was not found");
+  }
+
+  return customer._id;
+}
+
 // ── Individual handlers ──
 
 async function handleFaqSearch(
@@ -96,7 +129,7 @@ async function handleFaqSearch(
 
   try {
     // Get embedding from MiniMax embo-01
-    const embeddingRes = await fetch(
+    const embeddingRes = await fetchWithProviderPolicy(
       `${config.MINIMAX_BASE_URL}/embeddings`,
       {
         method: "POST",
@@ -109,7 +142,8 @@ async function handleFaqSearch(
           input: [input.query],
           type: "query",
         }),
-      }
+      },
+      { timeoutMs: config.PROVIDER_TIMEOUT_MS, maxAttempts: 2 },
     );
 
     if (!embeddingRes.ok) {
@@ -181,11 +215,14 @@ async function handleFaqSearch(
 }
 
 async function handleOrderLookup(
-  raw: Record<string, unknown>
+  raw: Record<string, unknown>,
+  context: ToolExecutionContext,
 ): Promise<ToolResult> {
   const input = OrderLookupInput.parse(raw);
+  const customerId = requireVerifiedCustomer(context, input.customerId, "order.lookup");
   const order = await convex.query(api.orders.getByNumber, {
     orderNumber: input.orderNumber,
+    customerId,
   });
 
   if (!order) {
@@ -210,11 +247,13 @@ async function handleOrderLookup(
 }
 
 async function handleAccountLookup(
-  raw: Record<string, unknown>
+  raw: Record<string, unknown>,
+  context: ToolExecutionContext,
 ): Promise<ToolResult> {
   const input = AccountLookupInput.parse(raw);
-  const customer = await convex.query(api.customers.getById, {
-    id: input.customerId,
+  const customerId = requireVerifiedCustomer(context, input.customerId, "account.lookup");
+  const customer = await convex.query(api.customers.getByReference, {
+    reference: customerId,
   });
 
   if (!customer) {
@@ -234,11 +273,15 @@ async function handleAccountLookup(
 }
 
 async function handleTicketCreate(
-  raw: Record<string, unknown>
+  raw: Record<string, unknown>,
+  context: ToolExecutionContext,
 ): Promise<ToolResult> {
   const input = TicketCreateInput.parse(raw);
+  const customerReference = requireVerifiedCustomer(context, input.customerId, "ticket.create");
+  const customerId = await resolveCustomerDocumentId(customerReference);
   const result = await convex.mutation(api.tickets.create, {
-    customerId: input.customerId,
+    customerId,
+    conversationId: context.conversationId,
     subject: input.subject,
     description: input.description,
     priority: input.priority,
@@ -248,11 +291,14 @@ async function handleTicketCreate(
 }
 
 async function handleTicketEscalate(
-  raw: Record<string, unknown>
+  raw: Record<string, unknown>,
+  context: ToolExecutionContext,
 ): Promise<ToolResult> {
   const input = TicketEscalateInput.parse(raw);
+  const customerId = requireVerifiedCustomer(context, undefined, "ticket.escalate");
   const result = await convex.mutation(api.tickets.escalate, {
     id: input.ticketId,
+    customerId,
     reason: input.reason,
     urgency: input.urgency,
   });
@@ -261,11 +307,14 @@ async function handleTicketEscalate(
 }
 
 async function handleAccountUpdate(
-  raw: Record<string, unknown>
+  raw: Record<string, unknown>,
+  context: ToolExecutionContext,
 ): Promise<ToolResult> {
   const input = AccountUpdateInput.parse(raw);
+  const customerReference = requireVerifiedCustomer(context, input.customerId, "account.update");
+  const customerId = await resolveCustomerDocumentId(customerReference);
   const result = await convex.mutation(api.customers.update, {
-    id: input.customerId,
+    id: customerId,
     email: input.email,
     displayName: input.displayName,
     phoneE164: input.phoneE164,
@@ -275,11 +324,17 @@ async function handleAccountUpdate(
 }
 
 async function handleOrderRefund(
-  raw: Record<string, unknown>
+  raw: Record<string, unknown>,
+  context: ToolExecutionContext,
 ): Promise<ToolResult> {
   const input = OrderRefundInput.parse(raw);
+  const customerId = requireVerifiedCustomer(context, undefined, "order.refund");
+  const orderReference = /^ORD-/i.test(input.orderId)
+    ? { orderNumber: input.orderId }
+    : { id: input.orderId };
   const result = await convex.mutation(api.orders.refund, {
-    id: input.orderId,
+    ...orderReference,
+    customerId,
     reason: input.reason,
     amountUsd: input.amountUsd,
   });

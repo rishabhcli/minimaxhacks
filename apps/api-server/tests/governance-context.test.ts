@@ -20,8 +20,8 @@ describe("resolveGovernanceContext", () => {
       trustLevel: 1,
       sentiment: "neutral",
       confidence: 0.9,
-      conversationId: "conv_123",
-      customerId: "cust_456",
+      conversationId: undefined,
+      customerId: undefined,
     });
   });
 

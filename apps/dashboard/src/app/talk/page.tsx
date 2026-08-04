@@ -1,70 +1,70 @@
 "use client";
 
 import { useState } from "react";
-import { VapiWidget } from "@/components/VapiWidget";
+import { AlertTriangle, CheckCircle2, ShieldCheck, SlidersHorizontal } from "lucide-react";
+import { PolicySurface } from "@/components/PolicySurface";
 import { RedTeamPanel, type AttackScenario } from "@/components/RedTeamPanel";
+import { VapiWidget } from "@/components/VapiWidget";
 
 export default function TalkPage() {
   const [redTeamMode, setRedTeamMode] = useState(false);
   const [activeScenario, setActiveScenario] = useState<AttackScenario | null>(null);
 
-  const handleSelectScenario = (scenario: AttackScenario | null) => {
+  const selectScenario = (scenario: AttackScenario | null) => {
     setActiveScenario(scenario);
   };
 
   const trustLevel = activeScenario?.trustLevel ?? 2;
-  const sentimentOverride = activeScenario?.sentiment;
+  const sentiment = activeScenario?.sentiment ?? "neutral";
 
   return (
-    <div style={{ paddingTop: "2rem" }}>
-      <h2 style={{ fontSize: "1.5rem", fontWeight: 700, textAlign: "center", marginBottom: "1rem" }}>
-        Talk to ShieldDesk Support
-      </h2>
-
-      {/* Mode toggle */}
-      <div style={{ display: "flex", justifyContent: "center", gap: "0.5rem", marginBottom: "2rem" }}>
-        <button
-          onClick={() => { setRedTeamMode(false); setActiveScenario(null); }}
-          className={`btn ${!redTeamMode ? "btn-primary" : "btn-outline"}`}
-          style={{ fontSize: "0.8rem" }}
-        >
-          Normal Mode
-        </button>
-        <button
-          onClick={() => setRedTeamMode(true)}
-          className={`btn ${redTeamMode ? "" : "btn-outline"}`}
-          style={redTeamMode ? { fontSize: "0.8rem", background: "var(--red)", color: "white" } : { fontSize: "0.8rem" }}
-        >
-          Red Team Mode
-        </button>
+    <div>
+      <div className="page-header">
+        <div>
+          <div className="eyebrow">ShieldDesk / Voice lab</div>
+          <h1 className="page-title">Test the agent boundary</h1>
+          <p className="page-description">Run a real browser conversation, then inspect how trust, sentiment, confidence, and tool risk shape the decision.</p>
+        </div>
+        <div className="mode-switch" aria-label="Voice lab mode">
+          <button className={!redTeamMode ? "active" : ""} onClick={() => { setRedTeamMode(false); setActiveScenario(null); }} type="button">
+            <ShieldCheck size={13} style={{ verticalAlign: "-2px", marginRight: 5 }} />
+            Standard
+          </button>
+          <button className={redTeamMode ? "active" : ""} onClick={() => setRedTeamMode(true)} type="button">
+            <AlertTriangle size={13} style={{ verticalAlign: "-2px", marginRight: 5 }} />
+            Red team
+          </button>
+        </div>
       </div>
 
-      {!redTeamMode ? (
-        /* Normal mode — just the widget centered */
-        <div style={{ maxWidth: "600px", margin: "0 auto" }}>
-          <p style={{ textAlign: "center", color: "var(--text-muted)", marginBottom: "2rem", fontSize: "0.875rem" }}>
-            Click the button below to start a voice conversation with our AI support agent.
-            Every action is governed by our policy engine and cryptographically verified.
-          </p>
-          <VapiWidget />
+      {redTeamMode ? (
+        <div className="voice-layout">
+          <VapiWidget trustLevel={trustLevel} sentimentOverride={sentiment} demoContext />
+          <div className="voice-side">
+            <RedTeamPanel onSelectScenario={selectScenario} activeScenarioId={activeScenario?.id ?? null} />
+            <PolicySurface trustLevel={trustLevel} sentiment={sentiment} compact />
+          </div>
         </div>
       ) : (
-        /* Red Team mode — three-column layout */
-        <div style={{ display: "grid", gridTemplateColumns: "280px 1fr", gap: "1rem", alignItems: "start" }}>
-          {/* Left: Attack scenarios */}
-          <div className="card" style={{ padding: "1rem" }}>
-            <RedTeamPanel
-              onSelectScenario={handleSelectScenario}
-              activeScenarioId={activeScenario?.id ?? null}
-            />
-          </div>
-
-          {/* Right: Voice widget */}
-          <div>
-            <VapiWidget
-              trustLevel={trustLevel as 1 | 2 | 3 | 4}
-              sentimentOverride={sentimentOverride}
-            />
+        <div className="voice-layout">
+          <VapiWidget />
+          <div className="voice-side">
+            <PolicySurface trustLevel={1} sentiment="neutral" compact />
+            <section className="panel">
+              <div className="panel-header">
+                <div>
+                  <h2 className="panel-title">Guardrail status</h2>
+                  <p className="panel-subtitle">What is active for every tool call</p>
+                </div>
+                <SlidersHorizontal size={17} color="var(--mint)" />
+              </div>
+              <div className="guardrail-list">
+                <div className="guardrail-row"><CheckCircle2 size={15} color="var(--mint)" /><span>Risk score assigned per tool</span></div>
+                <div className="guardrail-row"><CheckCircle2 size={15} color="var(--mint)" /><span>Confidence floor at 0.85 for autonomy</span></div>
+                <div className="guardrail-row"><CheckCircle2 size={15} color="var(--mint)" /><span>High-risk actions route to review</span></div>
+                <div className="guardrail-row"><CheckCircle2 size={15} color="var(--mint)" /><span>Failed verification fails closed</span></div>
+              </div>
+            </section>
           </div>
         </div>
       )}
